@@ -182,6 +182,8 @@ data class UiState(
     val sessionCorrect: Int = 0,
     val congratsMessage: String = "",
     val showConfetti: Boolean = false,
+    val teacherMessage: String = "",
+    val teacherMessageLoading: Boolean = false,
     val settings: AppSettings = AppSettings(),
     val hasAudioPermission: Boolean = false
 )
@@ -269,8 +271,36 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
             sessionCorrect = 0,
             congratsMessage = "",
             showConfetti = false,
+            teacherMessage = "",
+            teacherMessageLoading = false,
             feedback = "历史记录已清空。"
         )
+    }
+
+    fun requestTeacherMessage() {
+        val snapshot = _state.value
+        val settings = snapshot.settings
+        if (snapshot.teacherMessageLoading) return
+        if (snapshot.attempts.isEmpty()) {
+            _state.value = snapshot.copy(teacherMessage = "还没有答题记录。先练几题，老师就能写出更贴合你的鼓励寄语。")
+            return
+        }
+        if (!settings.llmEnabled || settings.apiKey.isBlank()) {
+            val fallback = buildLocalTeacherMessage(snapshot.attempts)
+            _state.value = snapshot.copy(teacherMessage = fallback)
+            viewModelScope.launch { speakWithBaidu(fallback) }
+            return
+        }
+
+        _state.value = snapshot.copy(teacherMessageLoading = true, teacherMessage = "老师正在看你的练习记录...")
+        viewModelScope.launch {
+            val summary = buildTeacherStatsSummary(snapshot.attempts, snapshot.sessions, settings.masteryStreakTarget)
+            val message = verifier.generateTeacherMessage(settings, summary).getOrElse {
+                buildLocalTeacherMessage(snapshot.attempts)
+            }
+            _state.value = _state.value.copy(teacherMessageLoading = false, teacherMessage = message)
+            speakWithBaidu(message)
+        }
     }
 
     private suspend fun askOneProblem() {
@@ -651,6 +681,41 @@ class AnswerVerifier {
                 .getString("content")
                 .trim()
                 .take(160)
+        }
+    }
+
+    suspend fun generateTeacherMessage(settings: AppSettings, statsSummary: String): Result<String> {
+        val apiBase = settings.apiBase.trim().trimEnd('/')
+        val endpoint = "$apiBase/chat/completions"
+        val body = JSONObject()
+            .put("model", settings.modelId)
+            .put("temperature", 0.7)
+            .put("max_tokens", 180)
+            .put(
+                "messages",
+                JSONArray()
+                    .put(JSONObject().put("role", "system").put("content", "你是一位小学数学老师。根据学生乘法口诀练习统计，写一段正向、具体、温暖的中文寄语，80字以内，适合朗读。先肯定进步，再指出一个小目标，不批评、不羞辱，不要 Markdown。"))
+                    .put(JSONObject().put("role", "user").put("content", statsSummary))
+            )
+
+        val request = Request.Builder()
+            .url(endpoint)
+            .addHeader("Authorization", "Bearer ${settings.apiKey.trim()}")
+            .addHeader("Content-Type", "application/json")
+            .post(body.toString().toRequestBody(jsonMediaType))
+            .build()
+
+        return runCatching {
+            val response = client.newCall(request).await()
+            if (!response.isSuccessful) throw IOException("LLM HTTP ${response.code}")
+            val responseBody = response.body?.string().orEmpty()
+            JSONObject(responseBody)
+                .getJSONArray("choices")
+                .getJSONObject(0)
+                .getJSONObject("message")
+                .getString("content")
+                .trim()
+                .take(220)
         }
     }
 
@@ -1184,7 +1249,7 @@ fun MultiplicationApp(viewModel: PracticeViewModel = viewModel()) {
         ) {
             when (tab) {
                 AppTab.Practice -> PracticeScreen(state, viewModel::start, viewModel::stop)
-                AppTab.Stats -> StatsScreen(state, viewModel::clearHistory)
+                AppTab.Stats -> StatsScreen(state, viewModel::clearHistory, viewModel::requestTeacherMessage)
                 AppTab.Settings -> SettingsScreen(state.settings, viewModel::updateSettings)
             }
         }
@@ -1365,7 +1430,7 @@ fun AttemptRow(attempt: Attempt) {
 }
 
 @Composable
-fun StatsScreen(state: UiState, onClear: () -> Unit) {
+fun StatsScreen(state: UiState, onClear: () -> Unit, onTeacherMessage: () -> Unit) {
     val attempts = state.attempts
     val total = attempts.size
     val correct = attempts.count { it.correct }
@@ -1383,6 +1448,41 @@ fun StatsScreen(state: UiState, onClear: () -> Unit) {
             Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
                 MetricCard("总题数", total.toString(), Modifier.weight(1f))
                 MetricCard("正确率", "$accuracy%", Modifier.weight(1f))
+            }
+        }
+        item {
+            Card(shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                            Text("老师寄语", fontWeight = FontWeight.Bold, color = Color(0xFF29323A))
+                            Text("根据当前答题统计生成一段鼓励和小目标。", color = Color(0xFF6C6F75), fontSize = 13.sp)
+                        }
+                        Spacer(Modifier.width(12.dp))
+                        Button(
+                            onClick = onTeacherMessage,
+                            enabled = attempts.isNotEmpty() && !state.teacherMessageLoading,
+                            shape = RoundedCornerShape(8.dp),
+                            colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF246B45))
+                        ) {
+                            Text(if (state.teacherMessageLoading) "生成中" else "老师寄语")
+                        }
+                    }
+                    if (state.teacherMessage.isNotBlank()) {
+                        Surface(color = Color(0xFFE9F1EC), shape = RoundedCornerShape(8.dp)) {
+                            Text(
+                                state.teacherMessage,
+                                modifier = Modifier.padding(14.dp),
+                                color = Color(0xFF29323A),
+                                lineHeight = 20.sp
+                            )
+                        }
+                    }
+                }
             }
         }
         item {
@@ -1588,6 +1688,52 @@ fun buildAchievements(attempts: List<Attempt>, sessions: List<PracticeSession>):
 
 fun hasMasteredAllProblems(attempts: List<Attempt>, target: Int): Boolean =
     ALL_PROBLEMS.all { problemMastery(it, attempts, target).mastered }
+
+fun buildTeacherStatsSummary(attempts: List<Attempt>, sessions: List<PracticeSession>, target: Int): String {
+    val total = attempts.size
+    val correct = attempts.count { it.correct }
+    val accuracy = if (total == 0) 0 else correct * 100 / total
+    val coverage = attempts.map { it.a to it.b }.toSet().size
+    val currentCorrect = attempts.takeWhile { it.correct }.size
+    val bestCorrect = bestCorrectStreak(attempts)
+    val currentDayStreak = currentPracticeDayStreak(attempts)
+    val mastered = ALL_PROBLEMS.count { problemMastery(it, attempts, target).mastered }
+    val recentSession = sessions.firstOrNull()?.let { "${it.correct}/${it.total}" } ?: "暂无完整练习局"
+    val weakProblems = ALL_PROBLEMS
+        .map { problemMastery(it, attempts, target) }
+        .filter { it.wrongCount > 0 && !it.mastered }
+        .sortedWith(compareByDescending<ProblemMastery> { it.wrongCount }.thenBy { it.recentCorrectStreak })
+        .take(6)
+        .joinToString("、") { "${it.problem.label}错${it.wrongCount}次/连对${it.recentCorrectStreak}" }
+        .ifBlank { "暂无明显薄弱题" }
+
+    return """
+        学生乘法口诀练习统计：
+        总答题 $total 题，答对 $correct 题，正确率 $accuracy%。
+        九九表覆盖 $coverage/81，达到连续答对 $target 次的组合 $mastered/81。
+        当前连续答对 $currentCorrect 题，历史最高连续答对 $bestCorrect 题。
+        当前连续练习 $currentDayStreak 天，最近一局成绩：$recentSession。
+        重点复习题：$weakProblems。
+        请生成正向鼓励寄语，肯定努力，并给一个下一步小目标。
+    """.trimIndent()
+}
+
+fun buildLocalTeacherMessage(attempts: List<Attempt>): String {
+    val total = attempts.size
+    val correct = attempts.count { it.correct }
+    val accuracy = if (total == 0) 0 else correct * 100 / total
+    val currentCorrect = attempts.takeWhile { it.correct }.size
+    val weak = attempts
+        .filterNot { it.correct }
+        .groupBy { it.problemLabel }
+        .maxByOrNull { it.value.size }
+        ?.key
+    return if (weak == null) {
+        "你今天练得很稳，已经答了 $total 题，正确率 $accuracy%。继续保持专注，下一步试试把连续答对提高到 ${currentCorrect + 3} 题。"
+    } else {
+        "你已经完成 $total 题，正确率 $accuracy%，很棒。下一步重点照顾一下 $weak，把它多练几遍，连续答对会越来越轻松。"
+    }
+}
 
 fun problemMastery(problem: Problem, attempts: List<Attempt>, target: Int): ProblemMastery {
     val rows = attempts.filter { it.a == problem.a && it.b == problem.b }
