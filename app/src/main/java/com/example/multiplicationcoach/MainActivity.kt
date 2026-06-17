@@ -165,7 +165,8 @@ data class AppSettings(
     val llmEnabled: Boolean = false,
     val apiBase: String = "https://maas-api.cn-huabei-1.xf-yun.com/v2",
     val modelId: String = "qwen3.6-35b-a3b",
-    val apiKey: String = ""
+    val apiKey: String = "",
+    val masteryStreakTarget: Int = 5
 )
 
 data class UiState(
@@ -179,6 +180,8 @@ data class UiState(
     val sessions: List<PracticeSession> = emptyList(),
     val sessionAnswered: Int = 0,
     val sessionCorrect: Int = 0,
+    val congratsMessage: String = "",
+    val showConfetti: Boolean = false,
     val settings: AppSettings = AppSettings(),
     val hasAudioPermission: Boolean = false
 )
@@ -196,6 +199,7 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
     private var sessionAnswered: Int = 0
     private var sessionCorrect: Int = 0
     private var dueProblems: MutableList<Problem> = mutableListOf()
+    private var celebratedMasteryThreshold: Int = prefs.loadCelebratedMasteryThreshold()
     private var stopped = false
 
     private val _state = MutableStateFlow(
@@ -245,18 +249,26 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun updateSettings(settings: AppSettings) {
-        prefs.saveSettings(settings)
-        _state.value = _state.value.copy(settings = settings)
+        val normalized = settings.copy(masteryStreakTarget = settings.masteryStreakTarget.coerceIn(1, 20))
+        prefs.saveSettings(normalized)
+        _state.value = _state.value.copy(settings = normalized)
+        viewModelScope.launch {
+            maybeCelebrateMastery(_state.value.attempts)
+        }
     }
 
     fun clearHistory() {
         prefs.saveAttempts(emptyList())
         prefs.saveSessions(emptyList())
+        prefs.saveCelebratedMasteryThreshold(0)
+        celebratedMasteryThreshold = 0
         _state.value = _state.value.copy(
             attempts = emptyList(),
             sessions = emptyList(),
             sessionAnswered = 0,
             sessionCorrect = 0,
+            congratsMessage = "",
+            showConfetti = false,
             feedback = "历史记录已清空。"
         )
     }
@@ -469,6 +481,37 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
             phase = if (correct) "答对" else "订正",
             feedback = feedback
         )
+        if (correct) {
+            viewModelScope.launch {
+                maybeCelebrateMastery(attempts)
+            }
+        }
+    }
+
+    private suspend fun maybeCelebrateMastery(attempts: List<Attempt>) {
+        val settings = _state.value.settings
+        val threshold = settings.masteryStreakTarget.coerceIn(1, 20)
+        if (threshold <= celebratedMasteryThreshold) return
+        if (!hasMasteredAllProblems(attempts, threshold)) return
+
+        celebratedMasteryThreshold = threshold
+        prefs.saveCelebratedMasteryThreshold(threshold)
+        val message = generateMasteryMessage(settings, threshold)
+        _state.value = _state.value.copy(
+            congratsMessage = message,
+            showConfetti = true,
+            phase = "任务达成",
+            feedback = "恭喜你攻克乘法口诀背诵任务！"
+        )
+        speakWithBaidu(message)
+        delay(7000)
+        _state.value = _state.value.copy(showConfetti = false)
+    }
+
+    private suspend fun generateMasteryMessage(settings: AppSettings, threshold: Int): String {
+        val fallback = "恭喜你攻克乘法口诀背诵任务！每一道乘法题都连续答对了 $threshold 次。你已经把九九乘法表练得又稳又快，继续保持这个节奏。"
+        if (!settings.llmEnabled || settings.apiKey.isBlank()) return fallback
+        return verifier.generateMasteryCongrats(settings, threshold).getOrDefault(fallback)
     }
 
     private fun finishSession(feedback: String) {
@@ -573,6 +616,41 @@ class AnswerVerifier {
                 .getJSONObject("message")
                 .getString("content")
             parseVerification(content, problem)
+        }
+    }
+
+    suspend fun generateMasteryCongrats(settings: AppSettings, threshold: Int): Result<String> {
+        val apiBase = settings.apiBase.trim().trimEnd('/')
+        val endpoint = "$apiBase/chat/completions"
+        val body = JSONObject()
+            .put("model", settings.modelId)
+            .put("temperature", 0.8)
+            .put("max_tokens", 120)
+            .put(
+                "messages",
+                JSONArray()
+                    .put(JSONObject().put("role", "system").put("content", "你是一位温暖、有鼓励感的小学数学教练。只输出一段中文祝贺语，适合语音播报，60字以内，不要 Markdown。"))
+                    .put(JSONObject().put("role", "user").put("content", "孩子已经把 1 到 9 的 81 个乘法组合全部连续答对至少 $threshold 次。请祝贺孩子攻克乘法口诀背诵任务，并鼓励继续保持。"))
+            )
+
+        val request = Request.Builder()
+            .url(endpoint)
+            .addHeader("Authorization", "Bearer ${settings.apiKey.trim()}")
+            .addHeader("Content-Type", "application/json")
+            .post(body.toString().toRequestBody(jsonMediaType))
+            .build()
+
+        return runCatching {
+            val response = client.newCall(request).await()
+            if (!response.isSuccessful) throw IOException("LLM HTTP ${response.code}")
+            val responseBody = response.body?.string().orEmpty()
+            JSONObject(responseBody)
+                .getJSONArray("choices")
+                .getJSONObject(0)
+                .getJSONObject("message")
+                .getString("content")
+                .trim()
+                .take(160)
         }
     }
 
@@ -904,7 +982,8 @@ class PracticePrefs(context: Context) {
         llmEnabled = prefs.getBoolean("llmEnabled", false),
         apiBase = prefs.getString("apiBase", "https://maas-api.cn-huabei-1.xf-yun.com/v2").orEmpty(),
         modelId = prefs.getString("modelId", "qwen3.6-35b-a3b").orEmpty(),
-        apiKey = prefs.getString("apiKey", "").orEmpty()
+        apiKey = prefs.getString("apiKey", "").orEmpty(),
+        masteryStreakTarget = prefs.getInt("masteryStreakTarget", 5).coerceIn(1, 20)
     )
 
     fun saveSettings(settings: AppSettings) {
@@ -920,7 +999,15 @@ class PracticePrefs(context: Context) {
             .putString("apiBase", settings.apiBase)
             .putString("modelId", settings.modelId)
             .putString("apiKey", settings.apiKey)
+            .putInt("masteryStreakTarget", settings.masteryStreakTarget.coerceIn(1, 20))
             .apply()
+    }
+
+    fun loadCelebratedMasteryThreshold(): Int =
+        prefs.getInt("celebratedMasteryThreshold", 0)
+
+    fun saveCelebratedMasteryThreshold(threshold: Int) {
+        prefs.edit().putInt("celebratedMasteryThreshold", threshold.coerceAtLeast(0)).apply()
     }
 
     fun loadAttempts(): List<Attempt> {
@@ -1176,6 +1263,20 @@ fun StatusCard(state: UiState) {
                 }
             }
             Text(state.feedback, textAlign = TextAlign.Center, color = Color(0xFF29323A))
+            if (state.congratsMessage.isNotBlank()) {
+                Surface(color = Color(0xFFE9F1EC), shape = RoundedCornerShape(8.dp)) {
+                    Text(
+                        state.congratsMessage,
+                        modifier = Modifier.padding(14.dp),
+                        color = Color(0xFF246B45),
+                        textAlign = TextAlign.Center,
+                        fontWeight = FontWeight.Bold
+                    )
+                }
+            }
+            if (state.showConfetti) {
+                ConfettiCelebration()
+            }
             if (state.running || state.sessionAnswered > 0) {
                 Text(
                     "本局 ${state.sessionAnswered}/$MAX_SESSION_PROBLEMS 题，答对 ${state.sessionCorrect} 题；前 81 题覆盖整张九九表",
@@ -1187,6 +1288,46 @@ fun StatusCard(state: UiState) {
             if (state.transcript.isNotBlank()) {
                 Text("识别：${state.transcript}", color = Color(0xFF59636E), textAlign = TextAlign.Center)
             }
+        }
+    }
+}
+
+@Composable
+fun ConfettiCelebration() {
+    var tick by remember { mutableStateOf(0) }
+    val pieces = remember {
+        List(52) { index ->
+            Triple(
+                Random.nextFloat(),
+                Random.nextFloat(),
+                (index % 5) + 2
+            )
+        }
+    }
+    LaunchedEffect(Unit) {
+        repeat(90) {
+            delay(70)
+            tick += 1
+        }
+    }
+    val colors = listOf(
+        Color(0xFF246B45),
+        Color(0xFF2F6F8F),
+        Color(0xFFE6C65A),
+        Color(0xFFB23A48),
+        Color(0xFF7A5CDE)
+    )
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(150.dp)
+            .background(Color(0xFFFFFBEC), RoundedCornerShape(8.dp))
+    ) {
+        pieces.forEachIndexed { index, piece ->
+            val x = piece.first * size.width
+            val y = ((piece.second * size.height) + tick * piece.third * 2.8f) % size.height
+            val radius = 4f + (index % 3) * 2f
+            drawCircle(colors[index % colors.size], radius = radius, center = Offset(x, y))
         }
     }
 }
@@ -1231,6 +1372,7 @@ fun StatsScreen(state: UiState, onClear: () -> Unit) {
     val accuracy = if (total == 0) 0 else (correct * 100 / total)
     val coverage = attempts.map { it.a to it.b }.toSet().size
     val achievements = buildAchievements(attempts, state.sessions)
+    val target = state.settings.masteryStreakTarget.coerceIn(1, 20)
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -1248,6 +1390,9 @@ fun StatsScreen(state: UiState, onClear: () -> Unit) {
                 MetricCard("九九表覆盖", "$coverage/81", Modifier.weight(1f))
                 MetricCard("练习局数", state.sessions.size.toString(), Modifier.weight(1f))
             }
+        }
+        item {
+            MistakeMatrix(attempts, target)
         }
         item {
             Text("学习成就", fontWeight = FontWeight.Bold, color = Color(0xFF29323A))
@@ -1307,6 +1452,59 @@ data class Achievement(
     val subtitle: String,
     val unlocked: Boolean
 )
+
+data class ProblemMastery(
+    val problem: Problem,
+    val wrongCount: Int,
+    val recentCorrectStreak: Int,
+    val mastered: Boolean
+)
+
+@Composable
+fun MistakeMatrix(attempts: List<Attempt>, target: Int) {
+    Card(shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+            Text("高频错题矩阵", fontWeight = FontWeight.Bold, color = Color(0xFF29323A))
+            Text(
+                "绿色表示掌握，红色表示错得多；最近连续答对会逐步退红。目标：每格连续答对 $target 次。",
+                color = Color(0xFF6C6F75),
+                fontSize = 13.sp
+            )
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                (1..9).forEach { a ->
+                    Row(horizontalArrangement = Arrangement.spacedBy(4.dp), modifier = Modifier.fillMaxWidth()) {
+                        (1..9).forEach { b ->
+                            val mastery = problemMastery(Problem(a, b), attempts, target)
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .height(34.dp)
+                                    .background(masteryColor(mastery, target), RoundedCornerShape(4.dp)),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    "${a}x$b",
+                                    color = Color.White,
+                                    fontSize = 10.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    textAlign = TextAlign.Center
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(8.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.size(14.dp).background(Color(0xFF246B45), RoundedCornerShape(3.dp)))
+                Text("已掌握", fontSize = 12.sp, color = Color(0xFF59636E))
+                Box(Modifier.size(14.dp).background(Color(0xFFE6C65A), RoundedCornerShape(3.dp)))
+                Text("练习中", fontSize = 12.sp, color = Color(0xFF59636E))
+                Box(Modifier.size(14.dp).background(Color(0xFFB23A48), RoundedCornerShape(3.dp)))
+                Text("重点复习", fontSize = 12.sp, color = Color(0xFF59636E))
+            }
+        }
+    }
+}
 
 @Composable
 fun AchievementCard(achievement: Achievement) {
@@ -1385,6 +1583,39 @@ fun buildAchievements(attempts: List<Attempt>, sessions: List<PracticeSession>):
             subtitle = "累计答对 50、100、300 题都值得庆祝。",
             unlocked = totalCorrect >= 50
         )
+    )
+}
+
+fun hasMasteredAllProblems(attempts: List<Attempt>, target: Int): Boolean =
+    ALL_PROBLEMS.all { problemMastery(it, attempts, target).mastered }
+
+fun problemMastery(problem: Problem, attempts: List<Attempt>, target: Int): ProblemMastery {
+    val rows = attempts.filter { it.a == problem.a && it.b == problem.b }
+    val wrongCount = rows.count { !it.correct }
+    val recentCorrectStreak = rows.takeWhile { it.correct }.size
+    return ProblemMastery(
+        problem = problem,
+        wrongCount = wrongCount,
+        recentCorrectStreak = recentCorrectStreak,
+        mastered = recentCorrectStreak >= target.coerceIn(1, 20)
+    )
+}
+
+fun masteryColor(mastery: ProblemMastery, target: Int): Color {
+    if (mastery.mastered) return Color(0xFF246B45)
+    val progress = (mastery.recentCorrectStreak.toFloat() / target.coerceIn(1, 20)).coerceIn(0f, 1f)
+    val heat = ((mastery.wrongCount + 1).toFloat() / 6f).coerceIn(0f, 1f)
+    val redPressure = (heat * (1f - progress * 0.75f)).coerceIn(0f, 1f)
+    return blendColor(Color(0xFF6DAA57), Color(0xFFB23A48), redPressure)
+}
+
+fun blendColor(start: Color, end: Color, fraction: Float): Color {
+    val f = fraction.coerceIn(0f, 1f)
+    return Color(
+        red = start.red + (end.red - start.red) * f,
+        green = start.green + (end.green - start.green) * f,
+        blue = start.blue + (end.blue - start.blue) * f,
+        alpha = 1f
     )
 }
 
@@ -1623,6 +1854,19 @@ fun SettingsScreen(settings: AppSettings, onUpdate: (AppSettings) -> Unit) {
         }
         item {
             Text("大模型", fontWeight = FontWeight.Bold, color = Color(0xFF29323A))
+        }
+        item {
+            OutlinedTextField(
+                value = draft.masteryStreakTarget.toString(),
+                onValueChange = { value ->
+                    val target = value.filter { it.isDigit() }.toIntOrNull()?.coerceIn(1, 20) ?: 1
+                    draft = draft.copy(masteryStreakTarget = target)
+                    onUpdate(draft)
+                },
+                label = { Text("攻克目标连续答对次数") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
         }
         item {
             SettingSwitch(
