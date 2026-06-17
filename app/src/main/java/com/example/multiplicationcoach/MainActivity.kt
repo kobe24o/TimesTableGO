@@ -164,7 +164,7 @@ data class AppSettings(
     val azureRegion: String = "eastasia",
     val llmEnabled: Boolean = false,
     val apiBase: String = "https://maas-api.cn-huabei-1.xf-yun.com/v2",
-    val modelId: String = "qwen3.6-35b-a3b",
+    val modelId: String = DEFAULT_LLM_MODEL_ID,
     val apiKey: String = "",
     val masteryStreakTarget: Int = 5
 )
@@ -617,7 +617,7 @@ class AnswerVerifier {
         val apiBase = settings.apiBase.trim().trimEnd('/')
         val endpoint = "$apiBase/chat/completions"
         val body = JSONObject()
-            .put("model", settings.modelId)
+            .put("model", normalizeLlmModelId(settings.modelId))
             .put("temperature", 0)
             .put("max_tokens", 80)
             .put(
@@ -637,7 +637,7 @@ class AnswerVerifier {
         return runCatching {
             val response = client.newCall(request).await()
             if (!response.isSuccessful) {
-                throw IOException("LLM HTTP ${response.code}")
+                throw llmHttpException(response)
             }
             val responseBody = response.body?.string().orEmpty()
             val content = JSONObject(responseBody)
@@ -653,7 +653,7 @@ class AnswerVerifier {
         val apiBase = settings.apiBase.trim().trimEnd('/')
         val endpoint = "$apiBase/chat/completions"
         val body = JSONObject()
-            .put("model", settings.modelId)
+            .put("model", normalizeLlmModelId(settings.modelId))
             .put("temperature", 0.8)
             .put("max_tokens", 120)
             .put(
@@ -672,7 +672,7 @@ class AnswerVerifier {
 
         return runCatching {
             val response = client.newCall(request).await()
-            if (!response.isSuccessful) throw IOException("LLM HTTP ${response.code}")
+            if (!response.isSuccessful) throw llmHttpException(response)
             val responseBody = response.body?.string().orEmpty()
             JSONObject(responseBody)
                 .getJSONArray("choices")
@@ -688,7 +688,7 @@ class AnswerVerifier {
         val apiBase = settings.apiBase.trim().trimEnd('/')
         val endpoint = "$apiBase/chat/completions"
         val body = JSONObject()
-            .put("model", settings.modelId)
+            .put("model", normalizeLlmModelId(settings.modelId))
             .put("temperature", 0.7)
             .put("max_tokens", 180)
             .put(
@@ -707,7 +707,7 @@ class AnswerVerifier {
 
         return runCatching {
             val response = client.newCall(request).await()
-            if (!response.isSuccessful) throw IOException("LLM HTTP ${response.code}")
+            if (!response.isSuccessful) throw llmHttpException(response)
             val responseBody = response.body?.string().orEmpty()
             JSONObject(responseBody)
                 .getJSONArray("choices")
@@ -717,6 +717,12 @@ class AnswerVerifier {
                 .trim()
                 .take(220)
         }
+    }
+
+    private fun llmHttpException(response: Response): IOException {
+        val detail = response.body?.string().orEmpty().trim().take(240)
+        val suffix = detail.takeIf { it.isNotBlank() }?.let { ": $it" }.orEmpty()
+        return IOException("LLM HTTP ${response.code}$suffix")
     }
 
     private fun parseVerification(content: String, problem: Problem): VerificationResult {
@@ -1046,7 +1052,7 @@ class PracticePrefs(context: Context) {
         azureRegion = prefs.getString("azureRegion", "eastasia").orEmpty(),
         llmEnabled = prefs.getBoolean("llmEnabled", false),
         apiBase = prefs.getString("apiBase", "https://maas-api.cn-huabei-1.xf-yun.com/v2").orEmpty(),
-        modelId = prefs.getString("modelId", "qwen3.6-35b-a3b").orEmpty(),
+        modelId = normalizeLlmModelId(prefs.getString("modelId", DEFAULT_LLM_MODEL_ID).orEmpty()),
         apiKey = prefs.getString("apiKey", "").orEmpty(),
         masteryStreakTarget = prefs.getInt("masteryStreakTarget", 5).coerceIn(1, 20)
     )
@@ -1062,7 +1068,7 @@ class PracticePrefs(context: Context) {
             .putString("azureRegion", settings.azureRegion)
             .putBoolean("llmEnabled", settings.llmEnabled)
             .putString("apiBase", settings.apiBase)
-            .putString("modelId", settings.modelId)
+            .putString("modelId", normalizeLlmModelId(settings.modelId))
             .putString("apiKey", settings.apiKey)
             .putInt("masteryStreakTarget", settings.masteryStreakTarget.coerceIn(1, 20))
             .apply()
@@ -1179,6 +1185,13 @@ const val ASR_SYSTEM = "system"
 const val ASR_BAIDU = "baidu"
 const val ASR_AZURE = "azure"
 const val MAX_SESSION_PROBLEMS = 100
+const val DEFAULT_LLM_MODEL_ID = "xopqwen36v35b"
+
+fun normalizeLlmModelId(modelId: String): String =
+    when (val trimmed = modelId.trim()) {
+        "", "qwen3.6-35b-a3b" -> DEFAULT_LLM_MODEL_ID
+        else -> trimmed
+    }
 
 private val ALL_PROBLEMS: List<Problem> = (1..9).flatMap { a ->
     (1..9).map { b -> Problem(a, b) }
