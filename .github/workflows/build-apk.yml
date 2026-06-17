@@ -11,6 +11,9 @@ on:
       - master
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     name: Build debug APK
@@ -37,9 +40,29 @@ jobs:
       - name: Build debug APK
         run: gradle :app:assembleDebug --no-daemon
 
+      - name: Prepare release APK
+        run: |
+          mkdir -p release
+          cp app/build/outputs/apk/debug/*.apk release/multiplication-coach-debug.apk
+
       - name: Upload debug APK
         uses: actions/upload-artifact@v4
         with:
           name: multiplication-coach-debug-apk
-          path: app/build/outputs/apk/debug/*.apk
+          path: release/multiplication-coach-debug.apk
           if-no-files-found: error
+
+      - name: Publish APK to GitHub Release
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        uses: ncipollo/release-action@v1
+        with:
+          tag: latest
+          name: Latest Debug APK
+          body: |
+            自动构建的 debug APK。
+
+            Source commit: ${{ github.sha }}
+          artifacts: release/multiplication-coach-debug.apk
+          allowUpdates: true
+          replacesArtifacts: true
+          makeLatest: true
