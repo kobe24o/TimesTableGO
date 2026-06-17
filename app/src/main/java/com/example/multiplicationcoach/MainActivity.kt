@@ -1,0 +1,1437 @@
+package com.example.multiplicationcoach
+
+import android.Manifest
+import android.annotation.SuppressLint
+import android.app.Application
+import android.content.Context
+import android.content.Intent
+import android.content.SharedPreferences
+import android.content.pm.PackageManager
+import android.media.AudioFormat
+import android.media.AudioRecord
+import android.media.MediaPlayer
+import android.media.MediaRecorder
+import android.os.Bundle
+import android.speech.RecognitionListener
+import android.speech.RecognizerIntent
+import android.speech.SpeechRecognizer
+import android.util.Base64
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BarChart
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.filled.VolumeUp
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.Card
+import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.Icon
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Scaffold
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Switch
+import androidx.compose.material3.Text
+import androidx.compose.material3.TopAppBar
+import androidx.compose.material3.TopAppBarDefaults
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.input.PasswordVisualTransformation
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
+import androidx.lifecycle.AndroidViewModel
+import androidx.lifecycle.viewModelScope
+import androidx.lifecycle.viewmodel.compose.viewModel
+import java.io.File
+import java.io.IOException
+import java.security.MessageDigest
+import java.util.Locale
+import kotlin.coroutines.resume
+import kotlin.math.max
+import kotlin.random.Random
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
+import kotlinx.coroutines.flow.asStateFlow
+import kotlinx.coroutines.launch
+import kotlinx.coroutines.suspendCancellableCoroutine
+import kotlinx.coroutines.withContext
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.FormBody
+import okhttp3.HttpUrl.Companion.toHttpUrl
+import okhttp3.MediaType.Companion.toMediaType
+import okhttp3.OkHttpClient
+import okhttp3.Request
+import okhttp3.RequestBody.Companion.toRequestBody
+import okhttp3.Response
+import org.json.JSONArray
+import org.json.JSONObject
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MultiplicationTheme {
+                MultiplicationApp()
+            }
+        }
+    }
+}
+
+data class Problem(val a: Int, val b: Int) {
+    val answer: Int = a * b
+    val label: String = "$a x $b"
+    val prompt: String = "$a 乘以 $b 等于多少"
+}
+
+data class Attempt(
+    val a: Int,
+    val b: Int,
+    val expected: Int,
+    val transcript: String,
+    val extractedAnswer: Int?,
+    val correct: Boolean,
+    val checkedBy: String,
+    val timestamp: Long = System.currentTimeMillis()
+) {
+    val problemLabel: String = "$a x $b"
+}
+
+data class AppSettings(
+    val ttsEnabled: Boolean = true,
+    val asrProvider: String = "system",
+    val baiduApiKey: String = "",
+    val baiduSecretKey: String = "",
+    val azureSpeechKey: String = "",
+    val azureEndpoint: String = "https://asia25.cognitiveservices.azure.com",
+    val azureRegion: String = "eastasia",
+    val llmEnabled: Boolean = false,
+    val apiBase: String = "https://maas-api.cn-huabei-1.xf-yun.com/v2",
+    val modelId: String = "qwen3.6-35b-a3b",
+    val apiKey: String = ""
+)
+
+data class UiState(
+    val running: Boolean = false,
+    val problem: Problem? = null,
+    val phase: String = "准备开始",
+    val countdown: Int = 0,
+    val transcript: String = "",
+    val feedback: String = "点击开始，系统会随机出一道 1-9 乘法题。",
+    val attempts: List<Attempt> = emptyList(),
+    val settings: AppSettings = AppSettings(),
+    val hasAudioPermission: Boolean = false
+)
+
+class PracticeViewModel(application: Application) : AndroidViewModel(application) {
+    private val prefs = PracticePrefs(application)
+    private val verifier = AnswerVerifier()
+    private val baiduAsr = BaiduAsrClient(application)
+    private val azureAsr = AzureSpeechClient()
+    private val speaker = BaiduTtsSpeaker(application)
+    private var recognizer: SpeechRecognizer? = null
+    private var sessionJob: Job? = null
+    private var currentProblem: Problem? = null
+    private var stopped = false
+
+    private val _state = MutableStateFlow(
+        UiState(
+            attempts = prefs.loadAttempts(),
+            settings = prefs.loadSettings(),
+            hasAudioPermission = hasAudioPermission(application)
+        )
+    )
+    val state: StateFlow<UiState> = _state.asStateFlow()
+
+    fun refreshPermission() {
+        _state.value = _state.value.copy(hasAudioPermission = hasAudioPermission(getApplication()))
+    }
+
+    fun start() {
+        if (_state.value.running) return
+        stopped = false
+        _state.value = _state.value.copy(running = true, feedback = "练习开始。")
+        sessionJob = viewModelScope.launch {
+            while (!stopped) {
+                askOneProblem()
+                delay(900)
+            }
+        }
+    }
+
+    fun stop() {
+        stopped = true
+        sessionJob?.cancel()
+        recognizer?.cancel()
+        speaker.stop()
+        _state.value = _state.value.copy(
+            running = false,
+            countdown = 0,
+            phase = "已停止",
+            feedback = "已停止，本次统计已保存。"
+        )
+    }
+
+    fun updateSettings(settings: AppSettings) {
+        prefs.saveSettings(settings)
+        _state.value = _state.value.copy(settings = settings)
+    }
+
+    fun clearHistory() {
+        prefs.saveAttempts(emptyList())
+        _state.value = _state.value.copy(attempts = emptyList(), feedback = "历史记录已清空。")
+    }
+
+    private suspend fun askOneProblem() {
+        val problem = randomProblem()
+        currentProblem = problem
+        _state.value = _state.value.copy(
+            problem = problem,
+            phase = "读题",
+            transcript = "",
+            countdown = 3,
+            feedback = "${problem.label} = ?"
+        )
+
+        if (_state.value.settings.ttsEnabled) {
+            speakWithBaidu(problem.prompt)
+        }
+
+        if (stopped) return
+
+        if (!_state.value.hasAudioPermission) {
+            recordAttempt(problem, "", null, false, "local", "缺少麦克风权限，无法语音作答。正确答案：${problem.answer}")
+            return
+        }
+
+        _state.value = _state.value.copy(phase = "请作答", feedback = "请在 3 秒内说出答案。")
+        val speechJob = viewModelScope.launch {
+            for (second in 3 downTo 1) {
+                _state.value = _state.value.copy(countdown = second)
+                delay(1000)
+            }
+            _state.value = _state.value.copy(countdown = 0)
+        }
+
+        val transcript = listenForAnswer(_state.value.settings)
+        speechJob.cancel()
+
+        if (stopped) return
+
+        _state.value = _state.value.copy(
+            phase = "判题中",
+            countdown = 0,
+            transcript = transcript.ifBlank { "未识别到语音" },
+            feedback = "正在校验答案..."
+        )
+
+        val localAnswer = extractNumber(transcript)
+        val settings = _state.value.settings
+        val result = if (settings.llmEnabled && settings.apiKey.isNotBlank()) {
+            verifier.verifyWithLlm(problem, transcript, settings).getOrElse {
+                VerificationResult(localAnswer == problem.answer, localAnswer, "local", "云端校验失败，已使用本地数字校验。")
+            }
+        } else {
+            VerificationResult(localAnswer == problem.answer, localAnswer, "local", null)
+        }
+
+        val message = if (result.correct) {
+            "答对了：${problem.label} = ${problem.answer}"
+        } else {
+            val heard = result.extractedAnswer?.toString() ?: "未识别"
+            "答错了，识别为 $heard；正确答案：${problem.answer}"
+        }
+        if (result.correct) {
+            speakWithBaidu(CORRECT_REPLIES.random())
+        } else {
+            speakWithBaidu("${problem.a} ${problem.b} ${problem.answer}")
+        }
+        recordAttempt(problem, transcript, result.extractedAnswer, result.correct, result.checkedBy, result.note ?: message)
+    }
+
+    private suspend fun speakWithBaidu(text: String) {
+        val settings = _state.value.settings
+        if (!settings.ttsEnabled) return
+        if (settings.baiduApiKey.isBlank() || settings.baiduSecretKey.isBlank()) {
+            _state.value = _state.value.copy(feedback = "请先在设置里填写百度语音 API Key 和 Secret Key。")
+            return
+        }
+        speaker.speak(text, settings).onFailure {
+            _state.value = _state.value.copy(feedback = "百度 TTS 播放失败：${it.message.orEmpty()}")
+        }
+    }
+
+    private suspend fun listenForAnswer(settings: AppSettings): String {
+        return if (
+            settings.asrProvider == ASR_BAIDU &&
+            settings.baiduApiKey.isNotBlank() &&
+            settings.baiduSecretKey.isNotBlank()
+        ) {
+            listenWithBaidu(settings)
+        } else if (
+            settings.asrProvider == ASR_AZURE &&
+            settings.azureSpeechKey.isNotBlank() &&
+            (settings.azureEndpoint.isNotBlank() || settings.azureRegion.isNotBlank())
+        ) {
+            listenWithAzure(settings)
+        } else {
+            listenWithSystemRecognizer()
+        }
+    }
+
+    private suspend fun listenWithBaidu(settings: AppSettings): String {
+        _state.value = _state.value.copy(transcript = "正在录音...")
+        val pcm = PcmRecorder.recordThreeSeconds()
+        if (stopped) return ""
+        _state.value = _state.value.copy(transcript = "百度识别中...")
+        return baiduAsr.transcribe(pcm, settings).getOrElse {
+            _state.value = _state.value.copy(feedback = "百度识别失败，已按未识别处理：${it.message.orEmpty()}")
+            ""
+        }
+    }
+
+    private suspend fun listenWithAzure(settings: AppSettings): String {
+        _state.value = _state.value.copy(transcript = "正在录音...")
+        val pcm = PcmRecorder.recordThreeSeconds()
+        if (stopped) return ""
+        _state.value = _state.value.copy(transcript = "Azure 识别中...")
+        return azureAsr.transcribe(pcm, settings).getOrElse {
+            _state.value = _state.value.copy(feedback = "Azure 识别失败，已按未识别处理：${it.message.orEmpty()}")
+            ""
+        }
+    }
+
+    private suspend fun listenWithSystemRecognizer(): String = suspendCancellableCoroutine { continuation ->
+        recognizer?.destroy()
+        val speechRecognizer = SpeechRecognizer.createSpeechRecognizer(getApplication())
+        recognizer = speechRecognizer
+        var resumed = false
+
+        fun finish(value: String) {
+            if (!resumed) {
+                resumed = true
+                speechRecognizer.stopListening()
+                continuation.resume(value)
+            }
+        }
+
+        speechRecognizer.setRecognitionListener(object : RecognitionListener {
+            override fun onReadyForSpeech(params: Bundle?) = Unit
+            override fun onBeginningOfSpeech() = Unit
+            override fun onRmsChanged(rmsdB: Float) = Unit
+            override fun onBufferReceived(buffer: ByteArray?) = Unit
+            override fun onEndOfSpeech() = Unit
+            override fun onPartialResults(partialResults: Bundle?) {
+                val partial = partialResults
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                    .orEmpty()
+                if (partial.isNotBlank()) {
+                    _state.value = _state.value.copy(transcript = partial)
+                }
+            }
+
+            override fun onEvent(eventType: Int, params: Bundle?) = Unit
+            override fun onError(error: Int) = finish("")
+            override fun onResults(results: Bundle?) {
+                val answer = results
+                    ?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)
+                    ?.firstOrNull()
+                    .orEmpty()
+                finish(answer)
+            }
+        })
+
+        val intent = Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
+            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.SIMPLIFIED_CHINESE.toLanguageTag())
+            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 2600L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
+        }
+        speechRecognizer.startListening(intent)
+
+        viewModelScope.launch {
+            delay(3200)
+            finish(_state.value.transcript)
+        }
+
+        continuation.invokeOnCancellation {
+            speechRecognizer.cancel()
+        }
+    }
+
+    private fun recordAttempt(
+        problem: Problem,
+        transcript: String,
+        extractedAnswer: Int?,
+        correct: Boolean,
+        checkedBy: String,
+        feedback: String
+    ) {
+        val attempt = Attempt(
+            a = problem.a,
+            b = problem.b,
+            expected = problem.answer,
+            transcript = transcript,
+            extractedAnswer = extractedAnswer,
+            correct = correct,
+            checkedBy = checkedBy
+        )
+        val attempts = (listOf(attempt) + _state.value.attempts).take(300)
+        prefs.saveAttempts(attempts)
+        _state.value = _state.value.copy(
+            attempts = attempts,
+            phase = if (correct) "答对" else "订正",
+            feedback = feedback
+        )
+    }
+
+    override fun onCleared() {
+        recognizer?.destroy()
+        speaker.shutdown()
+        super.onCleared()
+    }
+
+    private fun randomProblem(): Problem {
+        val last = currentProblem
+        repeat(8) {
+            val next = Problem(Random.nextInt(1, 10), Random.nextInt(1, 10))
+            if (next != last) return next
+        }
+        return Problem(Random.nextInt(1, 10), Random.nextInt(1, 10))
+    }
+
+    private fun hasAudioPermission(context: Context): Boolean =
+        ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) == PackageManager.PERMISSION_GRANTED
+}
+
+data class VerificationResult(
+    val correct: Boolean,
+    val extractedAnswer: Int?,
+    val checkedBy: String,
+    val note: String?
+)
+
+class AnswerVerifier {
+    private val client = OkHttpClient()
+    private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+
+    suspend fun verifyWithLlm(problem: Problem, transcript: String, settings: AppSettings): Result<VerificationResult> {
+        val apiBase = settings.apiBase.trim().trimEnd('/')
+        val endpoint = "$apiBase/chat/completions"
+        val body = JSONObject()
+            .put("model", settings.modelId)
+            .put("temperature", 0)
+            .put("max_tokens", 80)
+            .put(
+                "messages",
+                JSONArray()
+                    .put(JSONObject().put("role", "system").put("content", "你只做小学乘法口算判题。请从学生语音转写里提取一个整数答案，并严格输出 JSON：{\"answer\":数字或null,\"correct\":true或false}。"))
+                    .put(JSONObject().put("role", "user").put("content", "题目：${problem.a} x ${problem.b}。正确答案：${problem.answer}。学生语音转写：$transcript"))
+            )
+
+        val request = Request.Builder()
+            .url(endpoint)
+            .addHeader("Authorization", "Bearer ${settings.apiKey.trim()}")
+            .addHeader("Content-Type", "application/json")
+            .post(body.toString().toRequestBody(jsonMediaType))
+            .build()
+
+        return runCatching {
+            val response = client.newCall(request).await()
+            if (!response.isSuccessful) {
+                throw IOException("LLM HTTP ${response.code}")
+            }
+            val responseBody = response.body?.string().orEmpty()
+            val content = JSONObject(responseBody)
+                .getJSONArray("choices")
+                .getJSONObject(0)
+                .getJSONObject("message")
+                .getString("content")
+            parseVerification(content, problem)
+        }
+    }
+
+    private fun parseVerification(content: String, problem: Problem): VerificationResult {
+        val jsonText = Regex("\\{[\\s\\S]*}").find(content)?.value ?: content
+        val json = JSONObject(jsonText)
+        val extracted = if (json.isNull("answer")) null else json.optInt("answer")
+        val correct = json.optBoolean("correct", extracted == problem.answer)
+        return VerificationResult(correct, extracted, "llm", null)
+    }
+}
+
+class BaiduAsrClient(private val context: Context) {
+    private val client = OkHttpClient()
+    private val jsonMediaType = "application/json; charset=utf-8".toMediaType()
+    private var cachedToken: String? = null
+    private var tokenExpiresAtMs: Long = 0L
+
+    suspend fun transcribe(pcm: ByteArray, settings: AppSettings): Result<String> = runCatching {
+        val token = getAccessToken(settings)
+        val payload = JSONObject()
+            .put("format", "pcm")
+            .put("rate", 16000)
+            .put("channel", 1)
+            .put("cuid", deviceId())
+            .put("token", token)
+            .put("speech", Base64.encodeToString(pcm, Base64.NO_WRAP))
+            .put("len", pcm.size)
+
+        val request = Request.Builder()
+            .url("https://vop.baidu.com/server_api")
+            .addHeader("Content-Type", "application/json")
+            .post(payload.toString().toRequestBody(jsonMediaType))
+            .build()
+
+        val response = client.newCall(request).await()
+        val body = response.body?.string().orEmpty()
+        if (!response.isSuccessful) throw IOException("Baidu ASR HTTP ${response.code}")
+
+        val json = JSONObject(body)
+        val errNo = json.optInt("err_no", -1)
+        if (errNo != 0) {
+            throw IOException("Baidu ASR err_no=$errNo ${json.optString("err_msg")}")
+        }
+        json.optJSONArray("result")?.optString(0).orEmpty()
+    }
+
+    private suspend fun getAccessToken(settings: AppSettings): String {
+        val now = System.currentTimeMillis()
+        cachedToken?.takeIf { now < tokenExpiresAtMs }?.let { return it }
+        val url = "https://aip.baidubce.com/oauth/2.0/token".toHttpUrl().newBuilder()
+            .addQueryParameter("grant_type", "client_credentials")
+            .addQueryParameter("client_id", settings.baiduApiKey.trim())
+            .addQueryParameter("client_secret", settings.baiduSecretKey.trim())
+            .build()
+        val request = Request.Builder().url(url).get().build()
+        val response = client.newCall(request).await()
+        val body = response.body?.string().orEmpty()
+        if (!response.isSuccessful) throw IOException("Baidu token HTTP ${response.code}")
+        val json = JSONObject(body)
+        val token = json.optString("access_token")
+        if (token.isBlank()) throw IOException("Baidu token response missing access_token")
+        cachedToken = token
+        val expiresInSeconds = json.optLong("expires_in", 3600L)
+        tokenExpiresAtMs = now + (expiresInSeconds - 300L).coerceAtLeast(60L) * 1000L
+        return token
+    }
+
+    private fun deviceId(): String =
+        "multiplication-coach-${context.packageName}"
+}
+
+class AzureSpeechClient {
+    private val client = OkHttpClient()
+
+    suspend fun transcribe(pcm: ByteArray, settings: AppSettings): Result<String> = runCatching {
+        val host = settings.azureEndpoint.trim().trimEnd('/').ifBlank {
+            "https://${settings.azureRegion.trim()}.stt.speech.microsoft.com"
+        }
+        val endpoint = "$host/stt/speech/recognition/conversation/cognitiveservices/v1?language=zh-CN&format=detailed"
+        val request = Request.Builder()
+            .url(endpoint)
+            .addHeader("Ocp-Apim-Subscription-Key", settings.azureSpeechKey.trim())
+            .addHeader("Content-Type", "audio/wav; codecs=audio/pcm; samplerate=16000")
+            .addHeader("Accept", "application/json")
+            .post(PcmRecorder.toWav(pcm).toRequestBody("audio/wav".toMediaType()))
+            .build()
+        val response = client.newCall(request).await()
+        val body = response.body?.string().orEmpty()
+        if (!response.isSuccessful) throw IOException("Azure Speech HTTP ${response.code}")
+        val json = JSONObject(body)
+        json.optString("DisplayText")
+            .ifBlank {
+                json.optJSONArray("NBest")
+                    ?.optJSONObject(0)
+                    ?.optString("Display")
+                    .orEmpty()
+            }
+    }
+}
+
+object PcmRecorder {
+    private const val SAMPLE_RATE = 16000
+
+    @SuppressLint("MissingPermission")
+    suspend fun recordThreeSeconds(): ByteArray = withContext(Dispatchers.IO) {
+        val minBufferSize = AudioRecord.getMinBufferSize(
+            SAMPLE_RATE,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT
+        )
+        val bufferSize = max(minBufferSize, SAMPLE_RATE)
+        val audioRecord = AudioRecord(
+            MediaRecorder.AudioSource.MIC,
+            SAMPLE_RATE,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+            bufferSize
+        )
+        val targetBytes = SAMPLE_RATE * 2 * 3
+        val output = ByteArray(targetBytes)
+        var offset = 0
+        val buffer = ByteArray(bufferSize)
+        try {
+            audioRecord.startRecording()
+            while (offset < targetBytes) {
+                val read = audioRecord.read(buffer, 0, minOf(buffer.size, targetBytes - offset))
+                if (read > 0) {
+                    buffer.copyInto(output, offset, 0, read)
+                    offset += read
+                }
+            }
+        } finally {
+            runCatching { audioRecord.stop() }
+            audioRecord.release()
+        }
+        output
+    }
+
+    fun toWav(pcm: ByteArray): ByteArray {
+        val totalDataLen = pcm.size + 36
+        val byteRate = SAMPLE_RATE * 2
+        val header = ByteArray(44)
+        fun putString(offset: Int, value: String) {
+            value.toByteArray(Charsets.US_ASCII).copyInto(header, offset)
+        }
+        fun putInt(offset: Int, value: Int) {
+            header[offset] = (value and 0xff).toByte()
+            header[offset + 1] = ((value shr 8) and 0xff).toByte()
+            header[offset + 2] = ((value shr 16) and 0xff).toByte()
+            header[offset + 3] = ((value shr 24) and 0xff).toByte()
+        }
+        fun putShort(offset: Int, value: Int) {
+            header[offset] = (value and 0xff).toByte()
+            header[offset + 1] = ((value shr 8) and 0xff).toByte()
+        }
+        putString(0, "RIFF")
+        putInt(4, totalDataLen)
+        putString(8, "WAVE")
+        putString(12, "fmt ")
+        putInt(16, 16)
+        putShort(20, 1)
+        putShort(22, 1)
+        putInt(24, SAMPLE_RATE)
+        putInt(28, byteRate)
+        putShort(32, 2)
+        putShort(34, 16)
+        putString(36, "data")
+        putInt(40, pcm.size)
+        return header + pcm
+    }
+}
+
+private suspend fun Call.await(): Response = suspendCancellableCoroutine { continuation ->
+    enqueue(object : Callback {
+        override fun onFailure(call: Call, e: IOException) {
+            if (continuation.isActive) continuation.resumeWith(Result.failure(e))
+        }
+
+        override fun onResponse(call: Call, response: Response) {
+            continuation.resume(response)
+        }
+    })
+    continuation.invokeOnCancellation { cancel() }
+}
+
+class BaiduTtsSpeaker(private val context: Context) {
+    private val client = OkHttpClient()
+    private var cachedToken: String? = null
+    private var tokenExpiresAtMs: Long = 0L
+    private var currentPlayer: MediaPlayer? = null
+
+    suspend fun speak(text: String, settings: AppSettings): Result<Unit> = runCatching {
+        val audioFile = audioFileFor(text, settings)
+        play(audioFile)
+    }
+
+    private suspend fun audioFileFor(text: String, settings: AppSettings): File = withContext(Dispatchers.IO) {
+        val cacheDir = File(context.cacheDir, "baidu_tts").apply { mkdirs() }
+        val target = File(cacheDir, "${cacheKey(text)}.mp3")
+        if (target.exists() && target.length() > 0L) return@withContext target
+
+        val token = getAccessToken(settings)
+        val body = FormBody.Builder()
+            .add("tex", text)
+            .add("tok", token)
+            .add("cuid", deviceId())
+            .add("ctp", "1")
+            .add("lan", "zh")
+            .add("spd", "5")
+            .add("pit", "5")
+            .add("vol", "7")
+            .add("per", "0")
+            .add("aue", "3")
+            .build()
+        val request = Request.Builder()
+            .url("https://tsn.baidu.com/text2audio")
+            .post(body)
+            .build()
+
+        val bytes = client.newCall(request).await().use { response ->
+            val contentType = response.body?.contentType()?.toString().orEmpty()
+            val responseBytes = response.body?.bytes() ?: ByteArray(0)
+            if (!response.isSuccessful) {
+                throw IOException("Baidu TTS HTTP ${response.code}")
+            }
+            if (contentType.contains("json", ignoreCase = true) || responseBytes.firstOrNull() == '{'.code.toByte()) {
+                val errorBody = responseBytes.toString(Charsets.UTF_8)
+                val json = runCatching { JSONObject(errorBody) }.getOrNull()
+                throw IOException(json?.optString("err_msg")?.ifBlank { errorBody } ?: errorBody)
+            }
+            responseBytes
+        }
+
+        val temp = File.createTempFile("tts-", ".mp3", cacheDir)
+        temp.writeBytes(bytes)
+        if (!temp.renameTo(target)) {
+            target.writeBytes(bytes)
+            temp.delete()
+        }
+        target
+    }
+
+    private suspend fun getAccessToken(settings: AppSettings): String {
+        val now = System.currentTimeMillis()
+        cachedToken?.takeIf { now < tokenExpiresAtMs }?.let { return it }
+        val url = "https://aip.baidubce.com/oauth/2.0/token".toHttpUrl().newBuilder()
+            .addQueryParameter("grant_type", "client_credentials")
+            .addQueryParameter("client_id", settings.baiduApiKey.trim())
+            .addQueryParameter("client_secret", settings.baiduSecretKey.trim())
+            .build()
+        val request = Request.Builder().url(url).get().build()
+        val response = client.newCall(request).await()
+        val body = response.body?.string().orEmpty()
+        if (!response.isSuccessful) throw IOException("Baidu token HTTP ${response.code}")
+        val json = JSONObject(body)
+        val token = json.optString("access_token")
+        if (token.isBlank()) throw IOException("Baidu token response missing access_token")
+        cachedToken = token
+        val expiresInSeconds = json.optLong("expires_in", 3600L)
+        tokenExpiresAtMs = now + (expiresInSeconds - 300L).coerceAtLeast(60L) * 1000L
+        return token
+    }
+
+    private suspend fun play(file: File) = suspendCancellableCoroutine<Unit> { continuation ->
+        stop()
+        val player = MediaPlayer()
+        currentPlayer = player
+        fun finish() {
+            if (currentPlayer == player) currentPlayer = null
+            runCatching { player.release() }
+        }
+        player.setOnCompletionListener {
+            finish()
+            if (continuation.isActive) continuation.resume(Unit)
+        }
+        player.setOnErrorListener { _, what, extra ->
+            finish()
+            if (continuation.isActive) {
+                continuation.resumeWith(Result.failure(IOException("MediaPlayer error what=$what extra=$extra")))
+            }
+            true
+        }
+        try {
+            player.setDataSource(file.absolutePath)
+            player.prepare()
+            player.start()
+        } catch (error: Exception) {
+            finish()
+            if (continuation.isActive) continuation.resumeWith(Result.failure(error))
+        }
+        continuation.invokeOnCancellation {
+            if (currentPlayer == player) currentPlayer = null
+            runCatching { player.stop() }
+            runCatching { player.release() }
+        }
+    }
+
+    fun stop() {
+        currentPlayer?.let { player ->
+            runCatching { player.stop() }
+            runCatching { player.release() }
+        }
+        currentPlayer = null
+    }
+
+    fun shutdown() = stop()
+
+    private fun cacheKey(text: String): String =
+        MessageDigest.getInstance("SHA-256")
+            .digest(text.toByteArray(Charsets.UTF_8))
+            .joinToString("") { "%02x".format(it.toInt() and 0xff) }
+
+    private fun deviceId(): String =
+        "multiplication-coach-${context.packageName}"
+}
+
+class PracticePrefs(context: Context) {
+    private val prefs: SharedPreferences = context.getSharedPreferences("practice", Context.MODE_PRIVATE)
+
+    fun loadSettings(): AppSettings = AppSettings(
+        ttsEnabled = prefs.getBoolean("ttsEnabled", true),
+        asrProvider = prefs.getString("asrProvider", "system").orEmpty(),
+        baiduApiKey = prefs.getString("baiduApiKey", "").orEmpty(),
+        baiduSecretKey = prefs.getString("baiduSecretKey", "").orEmpty(),
+        azureSpeechKey = prefs.getString("azureSpeechKey", "").orEmpty(),
+        azureEndpoint = prefs.getString("azureEndpoint", "https://asia25.cognitiveservices.azure.com").orEmpty(),
+        azureRegion = prefs.getString("azureRegion", "eastasia").orEmpty(),
+        llmEnabled = prefs.getBoolean("llmEnabled", false),
+        apiBase = prefs.getString("apiBase", "https://maas-api.cn-huabei-1.xf-yun.com/v2").orEmpty(),
+        modelId = prefs.getString("modelId", "qwen3.6-35b-a3b").orEmpty(),
+        apiKey = prefs.getString("apiKey", "").orEmpty()
+    )
+
+    fun saveSettings(settings: AppSettings) {
+        prefs.edit()
+            .putBoolean("ttsEnabled", settings.ttsEnabled)
+            .putString("asrProvider", settings.asrProvider)
+            .putString("baiduApiKey", settings.baiduApiKey)
+            .putString("baiduSecretKey", settings.baiduSecretKey)
+            .putString("azureSpeechKey", settings.azureSpeechKey)
+            .putString("azureEndpoint", settings.azureEndpoint)
+            .putString("azureRegion", settings.azureRegion)
+            .putBoolean("llmEnabled", settings.llmEnabled)
+            .putString("apiBase", settings.apiBase)
+            .putString("modelId", settings.modelId)
+            .putString("apiKey", settings.apiKey)
+            .apply()
+    }
+
+    fun loadAttempts(): List<Attempt> {
+        val raw = prefs.getString("attempts", "[]").orEmpty()
+        return runCatching {
+            val array = JSONArray(raw)
+            List(array.length()) { index ->
+                val item = array.getJSONObject(index)
+                Attempt(
+                    a = item.getInt("a"),
+                    b = item.getInt("b"),
+                    expected = item.getInt("expected"),
+                    transcript = item.optString("transcript"),
+                    extractedAnswer = if (item.isNull("extractedAnswer")) null else item.getInt("extractedAnswer"),
+                    correct = item.getBoolean("correct"),
+                    checkedBy = item.optString("checkedBy", "local"),
+                    timestamp = item.optLong("timestamp", System.currentTimeMillis())
+                )
+            }
+        }.getOrDefault(emptyList())
+    }
+
+    fun saveAttempts(attempts: List<Attempt>) {
+        val array = JSONArray()
+        attempts.forEach { attempt ->
+            array.put(
+                JSONObject()
+                    .put("a", attempt.a)
+                    .put("b", attempt.b)
+                    .put("expected", attempt.expected)
+                    .put("transcript", attempt.transcript)
+                    .put("extractedAnswer", attempt.extractedAnswer)
+                    .put("correct", attempt.correct)
+                    .put("checkedBy", attempt.checkedBy)
+                    .put("timestamp", attempt.timestamp)
+            )
+        }
+        prefs.edit().putString("attempts", array.toString()).apply()
+    }
+}
+
+fun extractNumber(text: String): Int? {
+    if ('十' in text) {
+        chineseNumberToInt(text)?.let { return it }
+    }
+    Regex("\\d+").find(text)?.value?.toIntOrNull()?.let { return it }
+    val normalized = text
+        .replace("零", "0")
+        .replace("〇", "0")
+        .replace("一", "1")
+        .replace("二", "2")
+        .replace("两", "2")
+        .replace("三", "3")
+        .replace("四", "4")
+        .replace("五", "5")
+        .replace("六", "6")
+        .replace("七", "7")
+        .replace("八", "8")
+        .replace("九", "9")
+    Regex("\\d+").find(normalized)?.value?.toIntOrNull()?.let { return it }
+    return chineseNumberToInt(text)
+}
+
+fun chineseNumberToInt(text: String): Int? {
+    val digits = mapOf('零' to 0, '〇' to 0, '一' to 1, '二' to 2, '两' to 2, '三' to 3, '四' to 4, '五' to 5, '六' to 6, '七' to 7, '八' to 8, '九' to 9)
+    val tenIndex = text.indexOf('十')
+    if (tenIndex >= 0) {
+        val tens = text.getOrNull(tenIndex - 1)?.let { digits[it] } ?: 1
+        val ones = text.getOrNull(tenIndex + 1)?.let { digits[it] } ?: 0
+        return tens * 10 + ones
+    }
+    return text.firstNotNullOfOrNull { digits[it] }
+}
+
+const val ASR_SYSTEM = "system"
+const val ASR_BAIDU = "baidu"
+const val ASR_AZURE = "azure"
+
+private val CORRECT_REPLIES = listOf(
+    "答对了",
+    "很好，答对了",
+    "真棒，答对了",
+    "完全正确"
+)
+
+@OptIn(ExperimentalMaterial3Api::class)
+@Composable
+fun MultiplicationApp(viewModel: PracticeViewModel = viewModel()) {
+    val state by viewModel.state.collectAsState()
+    val context = LocalContext.current
+    var tab by remember { mutableStateOf(AppTab.Practice) }
+    val permissionLauncher = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        viewModel.refreshPermission()
+    }
+
+    LaunchedEffect(Unit) {
+        if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+            permissionLauncher.launch(Manifest.permission.RECORD_AUDIO)
+        }
+    }
+
+    DisposableEffect(Unit) {
+        onDispose { viewModel.stop() }
+    }
+
+    Scaffold(
+        topBar = {
+            TopAppBar(
+                title = { Text("乘法口诀背诵") },
+                colors = TopAppBarDefaults.topAppBarColors(containerColor = Color(0xFFF7F7F2))
+            )
+        },
+        bottomBar = {
+            NavigationBar(containerColor = Color.White) {
+                NavigationBarItem(
+                    selected = tab == AppTab.Practice,
+                    onClick = { tab = AppTab.Practice },
+                    icon = { Icon(Icons.Default.Mic, contentDescription = null) },
+                    label = { Text("练习") }
+                )
+                NavigationBarItem(
+                    selected = tab == AppTab.Stats,
+                    onClick = { tab = AppTab.Stats },
+                    icon = { Icon(Icons.Default.BarChart, contentDescription = null) },
+                    label = { Text("统计") }
+                )
+                NavigationBarItem(
+                    selected = tab == AppTab.Settings,
+                    onClick = { tab = AppTab.Settings },
+                    icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                    label = { Text("设置") }
+                )
+            }
+        }
+    ) { padding ->
+        Box(
+            modifier = Modifier
+                .fillMaxSize()
+                .background(Color(0xFFF7F7F2))
+                .padding(padding)
+        ) {
+            when (tab) {
+                AppTab.Practice -> PracticeScreen(state, viewModel::start, viewModel::stop)
+                AppTab.Stats -> StatsScreen(state, viewModel::clearHistory)
+                AppTab.Settings -> SettingsScreen(state.settings, viewModel::updateSettings)
+            }
+        }
+    }
+}
+
+enum class AppTab { Practice, Stats, Settings }
+
+@Composable
+fun PracticeScreen(state: UiState, onStart: () -> Unit, onStop: () -> Unit) {
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(18.dp),
+        horizontalAlignment = Alignment.CenterHorizontally
+    ) {
+        StatusCard(state)
+        Row(horizontalArrangement = Arrangement.spacedBy(14.dp)) {
+            Button(
+                onClick = onStart,
+                enabled = !state.running,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF246B45)),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Icon(Icons.Default.PlayArrow, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("开始")
+            }
+            Button(
+                onClick = onStop,
+                enabled = state.running,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB23A48)),
+                shape = RoundedCornerShape(8.dp)
+            ) {
+                Icon(Icons.Default.Stop, contentDescription = null)
+                Spacer(Modifier.width(8.dp))
+                Text("停止")
+            }
+        }
+        if (!state.hasAudioPermission) {
+            Text("需要麦克风权限才能语音作答。", color = Color(0xFFB23A48), textAlign = TextAlign.Center)
+        }
+        RecentAttempts(state.attempts.take(5))
+    }
+}
+
+@Composable
+fun StatusCard(state: UiState) {
+    Card(
+        modifier = Modifier.fillMaxWidth(),
+        shape = RoundedCornerShape(8.dp),
+        colors = CardDefaults.cardColors(containerColor = Color.White)
+    ) {
+        Column(
+            modifier = Modifier.padding(22.dp),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(14.dp)
+        ) {
+            Text(state.phase, color = Color(0xFF6C6F75), fontSize = 14.sp)
+            Text(
+                text = state.problem?.let { "${it.a} x ${it.b} = ?" } ?: "准备好了吗？",
+                fontSize = 48.sp,
+                fontWeight = FontWeight.Bold,
+                color = Color(0xFF182027),
+                textAlign = TextAlign.Center
+            )
+            if (state.countdown > 0) {
+                Box(
+                    modifier = Modifier
+                        .size(58.dp)
+                        .background(Color(0xFFE9F1EC), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Text("${state.countdown}", fontSize = 26.sp, fontWeight = FontWeight.Bold, color = Color(0xFF246B45))
+                }
+            }
+            Text(state.feedback, textAlign = TextAlign.Center, color = Color(0xFF29323A))
+            if (state.transcript.isNotBlank()) {
+                Text("识别：${state.transcript}", color = Color(0xFF59636E), textAlign = TextAlign.Center)
+            }
+        }
+    }
+}
+
+@Composable
+fun RecentAttempts(attempts: List<Attempt>) {
+    Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(8.dp)) {
+        Text("最近记录", fontWeight = FontWeight.SemiBold, color = Color(0xFF29323A))
+        if (attempts.isEmpty()) {
+            Text("还没有答题记录。", color = Color(0xFF7A8188))
+        } else {
+            attempts.forEach { attempt ->
+                AttemptRow(attempt)
+            }
+        }
+    }
+}
+
+@Composable
+fun AttemptRow(attempt: Attempt) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White, RoundedCornerShape(8.dp))
+            .padding(12.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column {
+            Text("${attempt.problemLabel} = ${attempt.expected}", fontWeight = FontWeight.SemiBold)
+            Text("作答：${attempt.transcript.ifBlank { "未识别" }}", color = Color(0xFF69727C), fontSize = 13.sp)
+        }
+        Text(if (attempt.correct) "正确" else "订正", color = if (attempt.correct) Color(0xFF246B45) else Color(0xFFB23A48), fontWeight = FontWeight.Bold)
+    }
+}
+
+@Composable
+fun StatsScreen(state: UiState, onClear: () -> Unit) {
+    val attempts = state.attempts
+    val total = attempts.size
+    val correct = attempts.count { it.correct }
+    val accuracy = if (total == 0) 0 else (correct * 100 / total)
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                MetricCard("总题数", total.toString(), Modifier.weight(1f))
+                MetricCard("正确率", "$accuracy%", Modifier.weight(1f))
+            }
+        }
+        item {
+            Card(shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text("正确率曲线", fontWeight = FontWeight.Bold)
+                    AccuracyChart(attempts.take(30).reversed())
+                }
+            }
+        }
+        item {
+            Text("高频错题", fontWeight = FontWeight.Bold, color = Color(0xFF29323A))
+        }
+        val mistakes = attempts
+            .filterNot { it.correct }
+            .groupBy { it.problemLabel }
+            .map { (label, rows) -> label to rows.size }
+            .sortedByDescending { it.second }
+            .take(10)
+        if (mistakes.isEmpty()) {
+            item { Text("暂时没有错题。", color = Color(0xFF7A8188)) }
+        } else {
+            items(mistakes) { (label, count) ->
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .background(Color.White, RoundedCornerShape(8.dp))
+                        .padding(14.dp),
+                    horizontalArrangement = Arrangement.SpaceBetween
+                ) {
+                    Text(label, fontWeight = FontWeight.SemiBold)
+                    Text("$count 次", color = Color(0xFFB23A48), fontWeight = FontWeight.Bold)
+                }
+            }
+        }
+        item {
+            Button(
+                onClick = onClear,
+                enabled = attempts.isNotEmpty(),
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFF59636E))
+            ) {
+                Text("清空统计")
+            }
+        }
+    }
+}
+
+@Composable
+fun MetricCard(label: String, value: String, modifier: Modifier = Modifier) {
+    Card(modifier = modifier, shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(6.dp)) {
+            Text(label, color = Color(0xFF6C6F75), fontSize = 13.sp)
+            Text(value, fontWeight = FontWeight.Bold, fontSize = 30.sp, color = Color(0xFF182027))
+        }
+    }
+}
+
+@Composable
+fun AccuracyChart(attempts: List<Attempt>) {
+    val points = attempts.mapIndexed { index, _ ->
+        val window = attempts.take(index + 1)
+        window.count { it.correct }.toFloat() / max(1, window.size)
+    }
+    Canvas(
+        modifier = Modifier
+            .fillMaxWidth()
+            .height(180.dp)
+            .background(Color(0xFFF3F4F0), RoundedCornerShape(8.dp))
+            .padding(12.dp)
+    ) {
+        val axisColor = Color(0xFFD1D6D1)
+        drawLine(axisColor, Offset(0f, size.height), Offset(size.width, size.height), strokeWidth = 2f)
+        drawLine(axisColor, Offset(0f, 0f), Offset(0f, size.height), strokeWidth = 2f)
+        if (points.isEmpty()) return@Canvas
+        val step = if (points.size == 1) size.width else size.width / (points.size - 1)
+        val path = Path()
+        points.forEachIndexed { index, value ->
+            val x = index * step
+            val y = size.height - value * size.height
+            if (index == 0) path.moveTo(x, y) else path.lineTo(x, y)
+            drawCircle(Color(0xFF246B45), radius = 5f, center = Offset(x, y))
+        }
+        drawPath(path, Color(0xFF246B45), style = Stroke(width = 5f, cap = StrokeCap.Round))
+    }
+}
+
+@Composable
+fun SettingsScreen(settings: AppSettings, onUpdate: (AppSettings) -> Unit) {
+    var draft by remember(settings) { mutableStateOf(settings) }
+    LazyColumn(
+        modifier = Modifier
+            .fillMaxSize()
+            .padding(20.dp),
+        verticalArrangement = Arrangement.spacedBy(16.dp)
+    ) {
+        item {
+            SettingSwitch(
+                title = "百度 TTS",
+                subtitle = "使用百度语音合成读题和反馈，音频会缓存在本机。",
+                checked = draft.ttsEnabled,
+                onCheckedChange = {
+                    draft = draft.copy(ttsEnabled = it)
+                    onUpdate(draft)
+                }
+            )
+        }
+        item {
+            Text("语音识别", fontWeight = FontWeight.Bold, color = Color(0xFF29323A))
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(10.dp), modifier = Modifier.fillMaxWidth()) {
+                Button(
+                    onClick = {
+                        draft = draft.copy(asrProvider = ASR_SYSTEM)
+                        onUpdate(draft)
+                    },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (draft.asrProvider == ASR_SYSTEM) Color(0xFF246B45) else Color(0xFF59636E)
+                    )
+                ) {
+                    Text("系统 ASR")
+                }
+                Button(
+                    onClick = {
+                        draft = draft.copy(asrProvider = ASR_BAIDU)
+                        onUpdate(draft)
+                    },
+                    modifier = Modifier.weight(1f),
+                    shape = RoundedCornerShape(8.dp),
+                    colors = ButtonDefaults.buttonColors(
+                        containerColor = if (draft.asrProvider == ASR_BAIDU) Color(0xFF246B45) else Color(0xFF59636E)
+                    )
+                ) {
+                    Text("百度 ASR")
+                }
+            }
+        }
+        item {
+            Button(
+                onClick = {
+                    draft = draft.copy(asrProvider = ASR_AZURE)
+                    onUpdate(draft)
+                },
+                modifier = Modifier.fillMaxWidth(),
+                shape = RoundedCornerShape(8.dp),
+                colors = ButtonDefaults.buttonColors(
+                    containerColor = if (draft.asrProvider == ASR_AZURE) Color(0xFF246B45) else Color(0xFF59636E)
+                )
+            ) {
+                Text("Azure Speech")
+            }
+        }
+        item {
+            OutlinedTextField(
+                value = draft.baiduApiKey,
+                onValueChange = {
+                    draft = draft.copy(baiduApiKey = it)
+                    onUpdate(draft)
+                },
+                label = { Text("百度语音 API Key") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation()
+            )
+        }
+        item {
+            OutlinedTextField(
+                value = draft.azureSpeechKey,
+                onValueChange = {
+                    draft = draft.copy(azureSpeechKey = it)
+                    onUpdate(draft)
+                },
+                label = { Text("Azure Speech Key") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation()
+            )
+        }
+        item {
+            OutlinedTextField(
+                value = draft.azureRegion,
+                onValueChange = {
+                    draft = draft.copy(azureRegion = it)
+                    onUpdate(draft)
+                },
+                label = { Text("Azure Region") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+        }
+        item {
+            OutlinedTextField(
+                value = draft.azureEndpoint,
+                onValueChange = {
+                    draft = draft.copy(azureEndpoint = it)
+                    onUpdate(draft)
+                },
+                label = { Text("Azure Endpoint") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+        }
+        item {
+            OutlinedTextField(
+                value = draft.baiduSecretKey,
+                onValueChange = {
+                    draft = draft.copy(baiduSecretKey = it)
+                    onUpdate(draft)
+                },
+                label = { Text("百度语音 Secret Key") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation()
+            )
+        }
+        item {
+            Text("大模型", fontWeight = FontWeight.Bold, color = Color(0xFF29323A))
+        }
+        item {
+            SettingSwitch(
+                title = "大模型校验",
+                subtitle = "开启后会把语音转写和当前题目发到配置的 OpenAI 兼容接口。",
+                checked = draft.llmEnabled,
+                onCheckedChange = {
+                    draft = draft.copy(llmEnabled = it)
+                    onUpdate(draft)
+                }
+            )
+        }
+        item {
+            OutlinedTextField(
+                value = draft.apiBase,
+                onValueChange = {
+                    draft = draft.copy(apiBase = it)
+                    onUpdate(draft)
+                },
+                label = { Text("API Base") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+        }
+        item {
+            OutlinedTextField(
+                value = draft.modelId,
+                onValueChange = {
+                    draft = draft.copy(modelId = it)
+                    onUpdate(draft)
+                },
+                label = { Text("Model ID") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
+            )
+        }
+        item {
+            OutlinedTextField(
+                value = draft.apiKey,
+                onValueChange = {
+                    draft = draft.copy(apiKey = it)
+                    onUpdate(draft)
+                },
+                label = { Text("API Key") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true,
+                visualTransformation = PasswordVisualTransformation()
+            )
+        }
+        item {
+            Surface(color = Color(0xFFE9F1EC), shape = RoundedCornerShape(8.dp)) {
+                Row(Modifier.padding(14.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Icon(Icons.Default.VolumeUp, contentDescription = null, tint = Color(0xFF246B45))
+                    Spacer(Modifier.width(10.dp))
+                    Text("题目会先播放再开始等待作答；答对反馈使用固定短句缓存，答错会念出题目和正确答案。", color = Color(0xFF29323A))
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun SettingSwitch(title: String, subtitle: String, checked: Boolean, onCheckedChange: (Boolean) -> Unit) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White, RoundedCornerShape(8.dp))
+            .padding(16.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(title, fontWeight = FontWeight.Bold, color = Color(0xFF182027))
+            Text(subtitle, color = Color(0xFF6C6F75), fontSize = 13.sp)
+        }
+        Spacer(Modifier.width(12.dp))
+        Switch(checked = checked, onCheckedChange = onCheckedChange)
+    }
+}
+
+@Composable
+fun MultiplicationTheme(content: @Composable () -> Unit) {
+    MaterialTheme(
+        colorScheme = androidx.compose.material3.lightColorScheme(
+            primary = Color(0xFF246B45),
+            secondary = Color(0xFF2F6F8F),
+            tertiary = Color(0xFFB23A48),
+            background = Color(0xFFF7F7F2),
+            surface = Color.White
+        ),
+        content = content
+    )
+}
