@@ -88,6 +88,9 @@ import androidx.lifecycle.viewmodel.compose.viewModel
 import java.io.File
 import java.io.IOException
 import java.security.MessageDigest
+import java.time.Instant
+import java.time.LocalDate
+import java.time.ZoneId
 import java.util.Locale
 import kotlin.coroutines.resume
 import kotlin.math.max
@@ -143,6 +146,14 @@ data class Attempt(
     val problemLabel: String = "$a x $b"
 }
 
+data class PracticeSession(
+    val total: Int,
+    val correct: Int,
+    val timestamp: Long = System.currentTimeMillis()
+) {
+    val perfect: Boolean = total > 0 && total == correct
+}
+
 data class AppSettings(
     val ttsEnabled: Boolean = true,
     val asrProvider: String = "system",
@@ -165,6 +176,9 @@ data class UiState(
     val transcript: String = "",
     val feedback: String = "点击开始，系统会随机出一道 1-9 乘法题。",
     val attempts: List<Attempt> = emptyList(),
+    val sessions: List<PracticeSession> = emptyList(),
+    val sessionAnswered: Int = 0,
+    val sessionCorrect: Int = 0,
     val settings: AppSettings = AppSettings(),
     val hasAudioPermission: Boolean = false
 )
@@ -178,11 +192,16 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
     private var recognizer: SpeechRecognizer? = null
     private var sessionJob: Job? = null
     private var currentProblem: Problem? = null
+    private var sessionStartedAt: Long = 0L
+    private var sessionAnswered: Int = 0
+    private var sessionCorrect: Int = 0
+    private var dueProblems: MutableList<Problem> = mutableListOf()
     private var stopped = false
 
     private val _state = MutableStateFlow(
         UiState(
             attempts = prefs.loadAttempts(),
+            sessions = prefs.loadSessions(),
             settings = prefs.loadSettings(),
             hasAudioPermission = hasAudioPermission(application)
         )
@@ -196,11 +215,23 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
     fun start() {
         if (_state.value.running) return
         stopped = false
-        _state.value = _state.value.copy(running = true, feedback = "练习开始。")
+        sessionStartedAt = System.currentTimeMillis()
+        sessionAnswered = 0
+        sessionCorrect = 0
+        dueProblems = ALL_PROBLEMS.toMutableList()
+        _state.value = _state.value.copy(
+            running = true,
+            sessionAnswered = 0,
+            sessionCorrect = 0,
+            feedback = "练习开始：前 81 题会覆盖整张乘法表，最多练 100 题。"
+        )
         sessionJob = viewModelScope.launch {
-            while (!stopped) {
+            while (!stopped && sessionAnswered < MAX_SESSION_PROBLEMS) {
                 askOneProblem()
                 delay(900)
+            }
+            if (!stopped && sessionAnswered >= MAX_SESSION_PROBLEMS) {
+                finishSession("本次 100 题练习完成，已经保存到成就统计。")
             }
         }
     }
@@ -210,12 +241,7 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         sessionJob?.cancel()
         recognizer?.cancel()
         speaker.stop()
-        _state.value = _state.value.copy(
-            running = false,
-            countdown = 0,
-            phase = "已停止",
-            feedback = "已停止，本次统计已保存。"
-        )
+        finishSession("已停止，本次统计已保存。")
     }
 
     fun updateSettings(settings: AppSettings) {
@@ -225,11 +251,18 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
 
     fun clearHistory() {
         prefs.saveAttempts(emptyList())
-        _state.value = _state.value.copy(attempts = emptyList(), feedback = "历史记录已清空。")
+        prefs.saveSessions(emptyList())
+        _state.value = _state.value.copy(
+            attempts = emptyList(),
+            sessions = emptyList(),
+            sessionAnswered = 0,
+            sessionCorrect = 0,
+            feedback = "历史记录已清空。"
+        )
     }
 
     private suspend fun askOneProblem() {
-        val problem = randomProblem()
+        val problem = nextProblem()
         currentProblem = problem
         _state.value = _state.value.copy(
             problem = problem,
@@ -426,12 +459,41 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
             checkedBy = checkedBy
         )
         val attempts = (listOf(attempt) + _state.value.attempts).take(300)
+        sessionAnswered += 1
+        if (correct) sessionCorrect += 1
         prefs.saveAttempts(attempts)
         _state.value = _state.value.copy(
             attempts = attempts,
+            sessionAnswered = sessionAnswered,
+            sessionCorrect = sessionCorrect,
             phase = if (correct) "答对" else "订正",
             feedback = feedback
         )
+    }
+
+    private fun finishSession(feedback: String) {
+        val existingSessions = _state.value.sessions
+        val sessions = if (sessionAnswered > 0) {
+            val summary = PracticeSession(
+                total = sessionAnswered.coerceAtMost(MAX_SESSION_PROBLEMS),
+                correct = sessionCorrect.coerceAtMost(sessionAnswered),
+                timestamp = sessionStartedAt.takeIf { it > 0L } ?: System.currentTimeMillis()
+            )
+            (listOf(summary) + existingSessions).take(100)
+        } else {
+            existingSessions
+        }
+        prefs.saveSessions(sessions)
+        _state.value = _state.value.copy(
+            running = false,
+            countdown = 0,
+            phase = "已停止",
+            sessions = sessions,
+            feedback = feedback
+        )
+        sessionAnswered = 0
+        sessionCorrect = 0
+        dueProblems.clear()
     }
 
     override fun onCleared() {
@@ -440,13 +502,27 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         super.onCleared()
     }
 
-    private fun randomProblem(): Problem {
+    private fun nextProblem(): Problem {
         val last = currentProblem
-        repeat(8) {
-            val next = Problem(Random.nextInt(1, 10), Random.nextInt(1, 10))
-            if (next != last) return next
+        if (sessionAnswered < ALL_PROBLEMS.size) {
+            if (dueProblems.isEmpty()) dueProblems = ALL_PROBLEMS.toMutableList()
+            return pickWeightedProblem(dueProblems, last).also { dueProblems.remove(it) }
         }
-        return Problem(Random.nextInt(1, 10), Random.nextInt(1, 10))
+        return pickWeightedProblem(ALL_PROBLEMS, last)
+    }
+
+    private fun pickWeightedProblem(candidates: List<Problem>, last: Problem?): Problem {
+        val choices = if (candidates.size > 1 && last != null) candidates.filterNot { it == last } else candidates
+        val weighted = choices.flatMap { problem -> List(problemWeight(problem)) { problem } }
+        return weighted.randomOrNull() ?: choices.random()
+    }
+
+    private fun problemWeight(problem: Problem): Int {
+        val rows = _state.value.attempts.filter { it.a == problem.a && it.b == problem.b }
+        val wrongCount = rows.count { !it.correct }
+        val recentWrongBonus = rows.firstOrNull()?.takeIf { !it.correct }?.let { 4 } ?: 0
+        val neverPracticedBonus = if (rows.isEmpty()) 1 else 0
+        return (1 + wrongCount * 3 + recentWrongBonus + neverPracticedBonus).coerceIn(1, 20)
     }
 
     private fun hasAudioPermission(context: Context): Boolean =
@@ -884,6 +960,34 @@ class PracticePrefs(context: Context) {
         }
         prefs.edit().putString("attempts", array.toString()).apply()
     }
+
+    fun loadSessions(): List<PracticeSession> {
+        val raw = prefs.getString("sessions", "[]").orEmpty()
+        return runCatching {
+            val array = JSONArray(raw)
+            List(array.length()) { index ->
+                val item = array.getJSONObject(index)
+                PracticeSession(
+                    total = item.optInt("total", 0),
+                    correct = item.optInt("correct", 0),
+                    timestamp = item.optLong("timestamp", System.currentTimeMillis())
+                )
+            }.filter { it.total > 0 }
+        }.getOrDefault(emptyList())
+    }
+
+    fun saveSessions(sessions: List<PracticeSession>) {
+        val array = JSONArray()
+        sessions.forEach { session ->
+            array.put(
+                JSONObject()
+                    .put("total", session.total)
+                    .put("correct", session.correct)
+                    .put("timestamp", session.timestamp)
+            )
+        }
+        prefs.edit().putString("sessions", array.toString()).apply()
+    }
 }
 
 fun extractNumber(text: String): Int? {
@@ -922,6 +1026,11 @@ fun chineseNumberToInt(text: String): Int? {
 const val ASR_SYSTEM = "system"
 const val ASR_BAIDU = "baidu"
 const val ASR_AZURE = "azure"
+const val MAX_SESSION_PROBLEMS = 100
+
+private val ALL_PROBLEMS: List<Problem> = (1..9).flatMap { a ->
+    (1..9).map { b -> Problem(a, b) }
+}
 
 private val CORRECT_REPLIES = listOf(
     "答对了",
@@ -1067,6 +1176,14 @@ fun StatusCard(state: UiState) {
                 }
             }
             Text(state.feedback, textAlign = TextAlign.Center, color = Color(0xFF29323A))
+            if (state.running || state.sessionAnswered > 0) {
+                Text(
+                    "本局 ${state.sessionAnswered}/$MAX_SESSION_PROBLEMS 题，答对 ${state.sessionCorrect} 题；前 81 题覆盖整张九九表",
+                    color = Color(0xFF59636E),
+                    textAlign = TextAlign.Center,
+                    fontSize = 13.sp
+                )
+            }
             if (state.transcript.isNotBlank()) {
                 Text("识别：${state.transcript}", color = Color(0xFF59636E), textAlign = TextAlign.Center)
             }
@@ -1112,6 +1229,8 @@ fun StatsScreen(state: UiState, onClear: () -> Unit) {
     val total = attempts.size
     val correct = attempts.count { it.correct }
     val accuracy = if (total == 0) 0 else (correct * 100 / total)
+    val coverage = attempts.map { it.a to it.b }.toSet().size
+    val achievements = buildAchievements(attempts, state.sessions)
     LazyColumn(
         modifier = Modifier
             .fillMaxSize()
@@ -1123,6 +1242,18 @@ fun StatsScreen(state: UiState, onClear: () -> Unit) {
                 MetricCard("总题数", total.toString(), Modifier.weight(1f))
                 MetricCard("正确率", "$accuracy%", Modifier.weight(1f))
             }
+        }
+        item {
+            Row(horizontalArrangement = Arrangement.spacedBy(12.dp), modifier = Modifier.fillMaxWidth()) {
+                MetricCard("九九表覆盖", "$coverage/81", Modifier.weight(1f))
+                MetricCard("练习局数", state.sessions.size.toString(), Modifier.weight(1f))
+            }
+        }
+        item {
+            Text("学习成就", fontWeight = FontWeight.Bold, color = Color(0xFF29323A))
+        }
+        items(achievements) { achievement ->
+            AchievementCard(achievement)
         }
         item {
             Card(shape = RoundedCornerShape(8.dp), colors = CardDefaults.cardColors(containerColor = Color.White)) {
@@ -1168,6 +1299,156 @@ fun StatsScreen(state: UiState, onClear: () -> Unit) {
             }
         }
     }
+}
+
+data class Achievement(
+    val title: String,
+    val value: String,
+    val subtitle: String,
+    val unlocked: Boolean
+)
+
+@Composable
+fun AchievementCard(achievement: Achievement) {
+    val accent = if (achievement.unlocked) Color(0xFF246B45) else Color(0xFF59636E)
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .background(Color.White, RoundedCornerShape(8.dp))
+            .padding(14.dp),
+        horizontalArrangement = Arrangement.SpaceBetween,
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(achievement.title, fontWeight = FontWeight.Bold, color = Color(0xFF182027))
+            Text(achievement.subtitle, color = Color(0xFF6C6F75), fontSize = 13.sp)
+        }
+        Spacer(Modifier.width(12.dp))
+        Text(achievement.value, color = accent, fontWeight = FontWeight.Bold, fontSize = 20.sp)
+    }
+}
+
+fun buildAchievements(attempts: List<Attempt>, sessions: List<PracticeSession>): List<Achievement> {
+    val coverage = attempts.map { it.a to it.b }.toSet().size
+    val currentCorrect = attempts.takeWhile { it.correct }.size
+    val bestCorrect = bestCorrectStreak(attempts)
+    val currentDayStreak = currentPracticeDayStreak(attempts)
+    val bestDayStreak = bestPracticeDayStreak(attempts)
+    val perfectSessions = sessions.takeWhile { it.perfect }.size
+    val bestPerfectSessions = bestPerfectSessionStreak(sessions)
+    val lastSession = sessions.firstOrNull()
+    val totalCorrect = attempts.count { it.correct }
+    val mistakeFixed = attempts
+        .groupBy { it.a to it.b }
+        .count { (_, rows) -> rows.any { !it.correct } && rows.first().correct }
+
+    return listOf(
+        Achievement(
+            title = "连续练习",
+            value = "${currentDayStreak}天",
+            subtitle = "最高连续 ${bestDayStreak} 天；每天完成至少 1 题就算打卡。",
+            unlocked = currentDayStreak >= 3
+        ),
+        Achievement(
+            title = "连续答对",
+            value = "${currentCorrect}题",
+            subtitle = "历史最高连续答对 ${bestCorrect} 题。",
+            unlocked = currentCorrect >= 10
+        ),
+        Achievement(
+            title = "满分连胜",
+            value = "${perfectSessions}次",
+            subtitle = "一次练习最多 100 题；历史最高满分连胜 ${bestPerfectSessions} 次。",
+            unlocked = perfectSessions >= 2
+        ),
+        Achievement(
+            title = "九九表探险家",
+            value = "$coverage/81",
+            subtitle = if (coverage >= 81) "81 个组合都练过了。" else "还差 ${81 - coverage} 个组合就集齐整张表。",
+            unlocked = coverage >= 81
+        ),
+        Achievement(
+            title = "百题挑战",
+            value = lastSession?.let { "${it.correct}/${it.total}" } ?: "0/100",
+            subtitle = "完成一局 100 题练习后，这里会显示最近战绩。",
+            unlocked = lastSession?.total == MAX_SESSION_PROBLEMS
+        ),
+        Achievement(
+            title = "错题清扫",
+            value = "${mistakeFixed}个",
+            subtitle = "曾经答错、最近一次已经答对的题目数量。",
+            unlocked = mistakeFixed >= 5
+        ),
+        Achievement(
+            title = "正确小达人",
+            value = "${totalCorrect}题",
+            subtitle = "累计答对 50、100、300 题都值得庆祝。",
+            unlocked = totalCorrect >= 50
+        )
+    )
+}
+
+fun bestCorrectStreak(attempts: List<Attempt>): Int {
+    var best = 0
+    var current = 0
+    attempts.asReversed().forEach { attempt ->
+        if (attempt.correct) {
+            current += 1
+            best = max(best, current)
+        } else {
+            current = 0
+        }
+    }
+    return best
+}
+
+fun currentPracticeDayStreak(attempts: List<Attempt>): Int {
+    val days = practiceDays(attempts)
+    if (days.isEmpty()) return 0
+    val today = LocalDate.now()
+    if (days.first() != today && days.first() != today.minusDays(1)) return 0
+    var streak = 1
+    var day = days.first()
+    while (days.contains(day.minusDays(1))) {
+        streak += 1
+        day = day.minusDays(1)
+    }
+    return streak
+}
+
+fun bestPracticeDayStreak(attempts: List<Attempt>): Int {
+    val days = practiceDays(attempts).sorted()
+    var best = 0
+    var current = 0
+    var previous: LocalDate? = null
+    days.forEach { day ->
+        current = if (previous?.plusDays(1) == day) current + 1 else 1
+        best = max(best, current)
+        previous = day
+    }
+    return best
+}
+
+fun bestPerfectSessionStreak(sessions: List<PracticeSession>): Int {
+    var best = 0
+    var current = 0
+    sessions.asReversed().forEach { session ->
+        if (session.perfect) {
+            current += 1
+            best = max(best, current)
+        } else {
+            current = 0
+        }
+    }
+    return best
+}
+
+fun practiceDays(attempts: List<Attempt>): List<LocalDate> {
+    val zone = ZoneId.systemDefault()
+    return attempts
+        .map { Instant.ofEpochMilli(it.timestamp).atZone(zone).toLocalDate() }
+        .toSet()
+        .sortedDescending()
 }
 
 @Composable
