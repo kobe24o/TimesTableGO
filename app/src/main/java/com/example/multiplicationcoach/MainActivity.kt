@@ -285,8 +285,8 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
             _state.value = snapshot.copy(teacherMessage = "还没有答题记录。先练几题，老师就能写出更贴合你的鼓励寄语。")
             return
         }
-        if (!settings.llmEnabled || settings.apiKey.isBlank()) {
-            val fallback = buildLocalTeacherMessage(snapshot.attempts)
+        if (settings.apiKey.isBlank()) {
+            val fallback = "请先在设置里填写大模型 API Key。老师寄语会把统计摘要发给配置的大模型生成。"
             _state.value = snapshot.copy(teacherMessage = fallback)
             viewModelScope.launch { speakWithBaidu(fallback) }
             return
@@ -295,8 +295,8 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         _state.value = snapshot.copy(teacherMessageLoading = true, teacherMessage = "老师正在看你的练习记录...")
         viewModelScope.launch {
             val summary = buildTeacherStatsSummary(snapshot.attempts, snapshot.sessions, settings.masteryStreakTarget)
-            val message = verifier.generateTeacherMessage(settings, summary).getOrElse {
-                buildLocalTeacherMessage(snapshot.attempts)
+            val message = verifier.generateTeacherMessage(settings, summary).getOrElse { error ->
+                "老师寄语生成失败：${error.message.orEmpty()}。请检查 API Base、Model ID 和 API Key。"
             }
             _state.value = _state.value.copy(teacherMessageLoading = false, teacherMessage = message)
             speakWithBaidu(message)
@@ -1460,7 +1460,7 @@ fun StatsScreen(state: UiState, onClear: () -> Unit, onTeacherMessage: () -> Uni
                     ) {
                         Column(modifier = Modifier.weight(1f), verticalArrangement = Arrangement.spacedBy(4.dp)) {
                             Text("老师寄语", fontWeight = FontWeight.Bold, color = Color(0xFF29323A))
-                            Text("根据当前答题统计生成一段鼓励和小目标。", color = Color(0xFF6C6F75), fontSize = 13.sp)
+                            Text("发送当前答题统计给配置的大模型，生成鼓励和小目标。", color = Color(0xFF6C6F75), fontSize = 13.sp)
                         }
                         Spacer(Modifier.width(12.dp))
                         Button(
