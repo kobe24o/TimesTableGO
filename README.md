@@ -41,3 +41,27 @@
 ```powershell
 gradle :app:assembleDebug
 ```
+
+## GitHub Release APK 固定签名
+
+GitHub Actions 会在 `main` 分支构建固定签名的 release APK，并上传到 `latest` Release。
+为了避免“签名不一致，需要卸载后安装”，需要在仓库 Settings -> Secrets and variables -> Actions 里配置这些 Secrets：
+
+- `ANDROID_KEYSTORE_BASE64`：release keystore 文件的 Base64 内容
+- `ANDROID_KEYSTORE_PASSWORD`：keystore 密码
+- `ANDROID_KEY_ALIAS`：key alias
+- `ANDROID_KEY_PASSWORD`：key 密码
+
+本地生成 keystore 示例：
+
+```powershell
+keytool -genkeypair -v -keystore release.jks -alias multiplication-coach -keyalg RSA -keysize 2048 -validity 10000
+```
+
+把 keystore 转成 Base64 后填入 `ANDROID_KEYSTORE_BASE64`：
+
+```powershell
+[Convert]::ToBase64String([IO.File]::ReadAllBytes("release.jks"))
+```
+
+不要把 `release.jks`、密码或 Base64 内容提交到仓库。

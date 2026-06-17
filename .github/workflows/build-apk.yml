@@ -16,7 +16,7 @@ permissions:
 
 jobs:
   build:
-    name: Build debug APK
+    name: Build APK
     runs-on: ubuntu-latest
 
     steps:
@@ -37,19 +37,50 @@ jobs:
         with:
           gradle-version: "8.9"
 
+      - name: Restore release signing keystore
+        if: github.event_name != 'pull_request'
+        env:
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+        run: |
+          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
+            echo "::error::Missing ANDROID_KEYSTORE_BASE64 secret. Add release signing secrets before publishing APK."
+            exit 1
+          fi
+          mkdir -p app/keystore
+          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > app/keystore/release.jks
+
+      - name: Build signed release APK
+        if: github.event_name != 'pull_request'
+        env:
+          SIGNING_KEYSTORE_PATH: keystore/release.jks
+          SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+          SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+        run: |
+          if [ -z "$SIGNING_STORE_PASSWORD" ] || [ -z "$SIGNING_KEY_ALIAS" ] || [ -z "$SIGNING_KEY_PASSWORD" ]; then
+            echo "::error::Missing one or more signing secrets: ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD."
+            exit 1
+          fi
+          gradle :app:assembleRelease --no-daemon
+
       - name: Build debug APK
+        if: github.event_name == 'pull_request'
         run: gradle :app:assembleDebug --no-daemon
 
-      - name: Prepare release APK
+      - name: Prepare APK
         run: |
           mkdir -p release
-          cp app/build/outputs/apk/debug/*.apk release/multiplication-coach-debug.apk
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            cp app/build/outputs/apk/debug/*.apk release/multiplication-coach-debug.apk
+          else
+            cp app/build/outputs/apk/release/*.apk release/multiplication-coach-release.apk
+          fi
 
-      - name: Upload debug APK
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: multiplication-coach-debug-apk
-          path: release/multiplication-coach-debug.apk
+          name: multiplication-coach-apk
+          path: release/*.apk
           if-no-files-found: error
 
       - name: Publish APK to GitHub Release
@@ -59,10 +90,10 @@ jobs:
           tag: latest
           name: Latest Debug APK
           body: |
-            自动构建的 debug APK。
+            自动构建的固定签名 release APK。
 
             Source commit: ${{ github.sha }}
-          artifacts: release/multiplication-coach-debug.apk
+          artifacts: release/multiplication-coach-release.apk
           allowUpdates: true
           replacesArtifacts: true
           makeLatest: true
