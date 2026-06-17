@@ -131,6 +131,8 @@ data class Problem(val a: Int, val b: Int) {
     val answer: Int = a * b
     val label: String = "$a x $b"
     val prompt: String = "$a 乘以 $b 等于多少"
+    val orderedAnswerPrompt: String
+        get() = "${minOf(a, b)} ${maxOf(a, b)} $answer"
 }
 
 data class Attempt(
@@ -166,6 +168,7 @@ data class AppSettings(
     val apiBase: String = "https://maas-api.cn-huabei-1.xf-yun.com/v2",
     val modelId: String = DEFAULT_LLM_MODEL_ID,
     val apiKey: String = "",
+    val answerTimeLimitSeconds: Int = DEFAULT_ANSWER_TIME_LIMIT_SECONDS,
     val masteryStreakTarget: Int = 5
 )
 
@@ -251,7 +254,10 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
     }
 
     fun updateSettings(settings: AppSettings) {
-        val normalized = settings.copy(masteryStreakTarget = settings.masteryStreakTarget.coerceIn(1, 20))
+        val normalized = settings.copy(
+            answerTimeLimitSeconds = normalizeAnswerTimeLimitSeconds(settings.answerTimeLimitSeconds),
+            masteryStreakTarget = settings.masteryStreakTarget.coerceIn(1, 20)
+        )
         prefs.saveSettings(normalized)
         _state.value = _state.value.copy(settings = normalized)
         viewModelScope.launch {
@@ -305,12 +311,13 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
 
     private suspend fun askOneProblem() {
         val problem = nextProblem()
+        val answerTimeLimitSeconds = normalizeAnswerTimeLimitSeconds(_state.value.settings.answerTimeLimitSeconds)
         currentProblem = problem
         _state.value = _state.value.copy(
             problem = problem,
             phase = "读题",
             transcript = "",
-            countdown = 3,
+            countdown = answerTimeLimitSeconds,
             feedback = "${problem.label} = ?"
         )
 
@@ -325,9 +332,9 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
             return
         }
 
-        _state.value = _state.value.copy(phase = "请作答", feedback = "请在 3 秒内说出答案。")
+        _state.value = _state.value.copy(phase = "请作答", feedback = "请在 $answerTimeLimitSeconds 秒内说出答案。")
         val speechJob = viewModelScope.launch {
-            for (second in 3 downTo 1) {
+            for (second in answerTimeLimitSeconds downTo 1) {
                 _state.value = _state.value.copy(countdown = second)
                 delay(1000)
             }
@@ -350,7 +357,7 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         val settings = _state.value.settings
         val result = if (settings.llmEnabled && settings.apiKey.isNotBlank()) {
             verifier.verifyWithLlm(problem, transcript, settings).getOrElse {
-                VerificationResult(localAnswer == problem.answer, localAnswer, "local", "云端校验失败，已使用本地数字校验。")
+                VerificationResult(localAnswer == problem.answer, localAnswer, "local", null)
             }
         } else {
             VerificationResult(localAnswer == problem.answer, localAnswer, "local", null)
@@ -365,7 +372,7 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         if (result.correct) {
             speakWithBaidu(CORRECT_REPLIES.random())
         } else {
-            speakWithBaidu("${problem.a} ${problem.b} ${problem.answer}")
+            speakWithBaidu(problem.orderedAnswerPrompt)
         }
         recordAttempt(problem, transcript, result.extractedAnswer, result.correct, result.checkedBy, result.note ?: message)
     }
@@ -402,7 +409,7 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
 
     private suspend fun listenWithBaidu(settings: AppSettings): String {
         _state.value = _state.value.copy(transcript = "正在录音...")
-        val pcm = PcmRecorder.recordThreeSeconds()
+        val pcm = PcmRecorder.recordSeconds(settings.answerTimeLimitSeconds)
         if (stopped) return ""
         _state.value = _state.value.copy(transcript = "百度识别中...")
         return baiduAsr.transcribe(pcm, settings).getOrElse {
@@ -413,7 +420,7 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
 
     private suspend fun listenWithAzure(settings: AppSettings): String {
         _state.value = _state.value.copy(transcript = "正在录音...")
-        val pcm = PcmRecorder.recordThreeSeconds()
+        val pcm = PcmRecorder.recordSeconds(settings.answerTimeLimitSeconds)
         if (stopped) return ""
         _state.value = _state.value.copy(transcript = "Azure 识别中...")
         return azureAsr.transcribe(pcm, settings).getOrElse {
@@ -427,6 +434,8 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         val speechRecognizer = SpeechRecognizer.createSpeechRecognizer(getApplication())
         recognizer = speechRecognizer
         var resumed = false
+        val answerTimeLimitSeconds = normalizeAnswerTimeLimitSeconds(_state.value.settings.answerTimeLimitSeconds)
+        val answerTimeLimitMillis = answerTimeLimitSeconds * 1000L
 
         fun finish(value: String) {
             if (!resumed) {
@@ -468,13 +477,13 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
             putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.SIMPLIFIED_CHINESE.toLanguageTag())
             putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
-            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, 2600L)
+            putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_MINIMUM_LENGTH_MILLIS, (answerTimeLimitMillis - 400L).coerceAtLeast(600L))
             putExtra(RecognizerIntent.EXTRA_SPEECH_INPUT_POSSIBLY_COMPLETE_SILENCE_LENGTH_MILLIS, 900L)
         }
         speechRecognizer.startListening(intent)
 
         viewModelScope.launch {
-            delay(3200)
+            delay(answerTimeLimitMillis + 200L)
             finish(_state.value.transcript)
         }
 
@@ -623,8 +632,8 @@ class AnswerVerifier {
             .put(
                 "messages",
                 JSONArray()
-                    .put(JSONObject().put("role", "system").put("content", "你只做小学乘法口算判题。请从学生语音转写里提取一个整数答案，并严格输出 JSON：{\"answer\":数字或null,\"correct\":true或false}。"))
-                    .put(JSONObject().put("role", "user").put("content", "题目：${problem.a} x ${problem.b}。正确答案：${problem.answer}。学生语音转写：$transcript"))
+                    .put(JSONObject().put("role", "system").put("content", "你只从学生语音转写里提取一个整数答案。不要解释，不要判断对错，只输出 JSON：{\"answer\":数字或null}。"))
+                    .put(JSONObject().put("role", "user").put("content", "学生语音转写：$transcript"))
             )
 
         val request = Request.Builder()
@@ -726,10 +735,14 @@ class AnswerVerifier {
     }
 
     private fun parseVerification(content: String, problem: Problem): VerificationResult {
-        val jsonText = Regex("\\{[\\s\\S]*}").find(content)?.value ?: content
-        val json = JSONObject(jsonText)
-        val extracted = if (json.isNull("answer")) null else json.optInt("answer")
-        val correct = json.optBoolean("correct", extracted == problem.answer)
+        val jsonText = Regex("\\{[\\s\\S]*}").find(content)?.value
+        val extracted = jsonText?.let {
+            runCatching {
+                val json = JSONObject(it)
+                if (json.isNull("answer")) null else json.optInt("answer")
+            }.getOrNull()
+        } ?: extractNumber(content)
+        val correct = extracted == problem.answer
         return VerificationResult(correct, extracted, "llm", null)
     }
 }
@@ -827,7 +840,8 @@ object PcmRecorder {
     private const val SAMPLE_RATE = 16000
 
     @SuppressLint("MissingPermission")
-    suspend fun recordThreeSeconds(): ByteArray = withContext(Dispatchers.IO) {
+    suspend fun recordSeconds(seconds: Int): ByteArray = withContext(Dispatchers.IO) {
+        val safeSeconds = normalizeAnswerTimeLimitSeconds(seconds)
         val minBufferSize = AudioRecord.getMinBufferSize(
             SAMPLE_RATE,
             AudioFormat.CHANNEL_IN_MONO,
@@ -841,7 +855,7 @@ object PcmRecorder {
             AudioFormat.ENCODING_PCM_16BIT,
             bufferSize
         )
-        val targetBytes = SAMPLE_RATE * 2 * 3
+        val targetBytes = SAMPLE_RATE * 2 * safeSeconds
         val output = ByteArray(targetBytes)
         var offset = 0
         val buffer = ByteArray(bufferSize)
@@ -1054,6 +1068,9 @@ class PracticePrefs(context: Context) {
         apiBase = prefs.getString("apiBase", "https://maas-api.cn-huabei-1.xf-yun.com/v2").orEmpty(),
         modelId = normalizeLlmModelId(prefs.getString("modelId", DEFAULT_LLM_MODEL_ID).orEmpty()),
         apiKey = prefs.getString("apiKey", "").orEmpty(),
+        answerTimeLimitSeconds = normalizeAnswerTimeLimitSeconds(
+            prefs.getInt("answerTimeLimitSeconds", DEFAULT_ANSWER_TIME_LIMIT_SECONDS)
+        ),
         masteryStreakTarget = prefs.getInt("masteryStreakTarget", 5).coerceIn(1, 20)
     )
 
@@ -1070,6 +1087,7 @@ class PracticePrefs(context: Context) {
             .putString("apiBase", settings.apiBase)
             .putString("modelId", normalizeLlmModelId(settings.modelId))
             .putString("apiKey", settings.apiKey)
+            .putInt("answerTimeLimitSeconds", normalizeAnswerTimeLimitSeconds(settings.answerTimeLimitSeconds))
             .putInt("masteryStreakTarget", settings.masteryStreakTarget.coerceIn(1, 20))
             .apply()
     }
@@ -1186,12 +1204,18 @@ const val ASR_BAIDU = "baidu"
 const val ASR_AZURE = "azure"
 const val MAX_SESSION_PROBLEMS = 100
 const val DEFAULT_LLM_MODEL_ID = "xopqwen36v35b"
+const val DEFAULT_ANSWER_TIME_LIMIT_SECONDS = 3
+const val MIN_ANSWER_TIME_LIMIT_SECONDS = 1
+const val MAX_ANSWER_TIME_LIMIT_SECONDS = 15
 
 fun normalizeLlmModelId(modelId: String): String =
     when (val trimmed = modelId.trim()) {
         "", "qwen3.6-35b-a3b" -> DEFAULT_LLM_MODEL_ID
         else -> trimmed
     }
+
+fun normalizeAnswerTimeLimitSeconds(seconds: Int): Int =
+    seconds.coerceIn(MIN_ANSWER_TIME_LIMIT_SECONDS, MAX_ANSWER_TIME_LIMIT_SECONDS)
 
 private val ALL_PROBLEMS: List<Problem> = (1..9).flatMap { a ->
     (1..9).map { b -> Problem(a, b) }
@@ -2009,6 +2033,24 @@ fun SettingsScreen(settings: AppSettings, onUpdate: (AppSettings) -> Unit) {
                 modifier = Modifier.fillMaxWidth(),
                 singleLine = true,
                 visualTransformation = PasswordVisualTransformation()
+            )
+        }
+        item {
+            Text("练习设置", fontWeight = FontWeight.Bold, color = Color(0xFF29323A))
+        }
+        item {
+            OutlinedTextField(
+                value = draft.answerTimeLimitSeconds.toString(),
+                onValueChange = { value ->
+                    val seconds = value.filter { it.isDigit() }.toIntOrNull()
+                        ?.let(::normalizeAnswerTimeLimitSeconds)
+                        ?: DEFAULT_ANSWER_TIME_LIMIT_SECONDS
+                    draft = draft.copy(answerTimeLimitSeconds = seconds)
+                    onUpdate(draft)
+                },
+                label = { Text("答题时间限制（秒）") },
+                modifier = Modifier.fillMaxWidth(),
+                singleLine = true
             )
         }
         item {
