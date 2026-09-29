@@ -1,0 +1,15 @@
+Fixed prompt audio attribution
+
+Audio source model: iic/CosyVoice-300M-SFT
+Upstream implementation: FunAudioLLM/CosyVoice
+Selected Hugging Face revision: fbb71de2afe387ed854eebd80b9f3d078c6b9869
+Generation date: 2026-09-29
+Speaker: 中文女
+
+The CosyVoice source code and selected model are distributed under the Apache
+License, Version 2.0. The model weights are used only at build time and are not
+included in this Android application. To regenerate the fixed Ogg resources,
+use tools/generate_fixed_voice_audio.ps1 with a local checked-out CosyVoice
+repository and local model directory.
+
+Apache License 2.0: https://www.apache.org/licenses/LICENSE-2.0

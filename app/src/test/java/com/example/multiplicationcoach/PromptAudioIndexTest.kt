@@ -16,6 +16,13 @@ class PromptAudioIndexTest {
     }
 
     @Test
+    fun mapsAllFixedFeedbackToRawResourceNames() {
+        assertEquals("feedback_incorrect", PromptAudioIndex.feedbackResourceName(FixedFeedback.Incorrect))
+        assertEquals("feedback_listen", PromptAudioIndex.feedbackResourceName(FixedFeedback.Listen))
+        assertEquals("feedback_no_speech", PromptAudioIndex.feedbackResourceName(FixedFeedback.NoSpeech))
+    }
+
+    @Test
     fun rejectsOutOfRangeProblemOperands() {
         assertThrows(IllegalArgumentException::class.java) {
             PromptAudioIndex.problemResourceName(0, 4)

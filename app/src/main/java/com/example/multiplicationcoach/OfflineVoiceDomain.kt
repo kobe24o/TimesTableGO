@@ -59,7 +59,8 @@ object AnswerTranscriptParser {
 enum class FixedFeedback {
     Correct,
     Incorrect,
-    TryAgain,
+    Listen,
+    NoSpeech,
 }
 
 object PromptAudioIndex {
@@ -71,6 +72,7 @@ object PromptAudioIndex {
     fun feedbackResourceName(feedback: FixedFeedback): String = when (feedback) {
         FixedFeedback.Correct -> "feedback_correct"
         FixedFeedback.Incorrect -> "feedback_incorrect"
-        FixedFeedback.TryAgain -> "feedback_try_again"
+        FixedFeedback.Listen -> "feedback_listen"
+        FixedFeedback.NoSpeech -> "feedback_no_speech"
     }
 }
