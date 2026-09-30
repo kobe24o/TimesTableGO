@@ -4,7 +4,7 @@
 
 ## 语音方案
 
-- 题目：81 道乘法题及 4 条反馈音频，以 22.05 kHz 单声道 Ogg Opus 打包在 APK 中。
+- 题目：81 道乘法题及 4 条反馈音频，以 22.05 kHz 单声道 Ogg/Vorbis 打包在 APK 中。
 - 合成来源：本地执行 CosyVoice-300M-SFT 的固定中文女声音色；运行时不携带 TTS 权重。
 - 识别：APK 内置 sherpa-onnx SenseVoice int8 和 Silero VAD，默认完全离线。
 - 后备：用户可以在设置中显式选择 Android 系统 ASR。
@@ -15,6 +15,10 @@
 运行 gradlew.bat :app:testDebugUnitTest :app:assembleRelease。
 
 APK 位于 app/build/outputs/apk/release。正式发布请在 CI 配置稳定的 release keystore。
+
+当前本地构建产物（2026-09-30）为 204,292,260 字节，SHA-256：
+`fe82c7e65460bbadca07159606a22940d1c6003aebcbbdfd87ca52a589c530fc`。
+该产物在未提供 release keystore 时使用 Android Debug 证书签名，仅供本机安装测试；正式发布前必须替换为稳定的发布证书。
 
 ## 重新生成固定音频
 

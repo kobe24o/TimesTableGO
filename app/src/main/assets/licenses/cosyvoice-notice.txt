@@ -3,8 +3,9 @@ Fixed prompt audio attribution
 Audio source model: iic/CosyVoice-300M-SFT
 Upstream implementation: FunAudioLLM/CosyVoice
 Selected Hugging Face revision: fbb71de2afe387ed854eebd80b9f3d078c6b9869
-Generation date: 2026-09-29
+Generation date: 2026-09-30
 Speaker: 中文女
+Audio encoding: 22.05 kHz mono Ogg/Vorbis
 
 The CosyVoice source code and selected model are distributed under the Apache
 License, Version 2.0. The model weights are used only at build time and are not

@@ -4,6 +4,13 @@ plugins {
     id("org.jetbrains.kotlin.plugin.compose")
 }
 
+val hasReleaseSigning = listOf(
+    "SIGNING_KEYSTORE_PATH",
+    "SIGNING_STORE_PASSWORD",
+    "SIGNING_KEY_ALIAS",
+    "SIGNING_KEY_PASSWORD",
+).all { !System.getenv(it).isNullOrBlank() }
+
 android {
     namespace = "com.example.multiplicationcoach"
     compileSdk = 35
@@ -31,12 +38,7 @@ android {
             val keyAliasValue = System.getenv("SIGNING_KEY_ALIAS")
             val keyPasswordValue = System.getenv("SIGNING_KEY_PASSWORD")
 
-            if (
-                !keystorePath.isNullOrBlank() &&
-                !storePasswordValue.isNullOrBlank() &&
-                !keyAliasValue.isNullOrBlank() &&
-                !keyPasswordValue.isNullOrBlank()
-            ) {
+            if (hasReleaseSigning) {
                 storeFile = file(keystorePath)
                 storePassword = storePasswordValue
                 keyAlias = keyAliasValue
@@ -48,7 +50,7 @@ android {
     buildTypes {
         release {
             isMinifyEnabled = false
-            signingConfig = signingConfigs.getByName("release")
+            signingConfig = signingConfigs.getByName(if (hasReleaseSigning) "release" else "debug")
         }
     }
 
@@ -74,7 +76,6 @@ dependencies {
     implementation("androidx.lifecycle:lifecycle-runtime-ktx:2.8.7")
     implementation("androidx.lifecycle:lifecycle-viewmodel-compose:2.8.7")
     implementation("org.jetbrains.kotlinx:kotlinx-coroutines-android:1.9.0")
-    implementation("com.squareup.okhttp3:okhttp:4.12.0")
     implementation(files("libs/sherpa-onnx-1.13.8.jar"))
     testImplementation("junit:junit:4.13.2")
     debugImplementation("androidx.compose.ui:ui-tooling")

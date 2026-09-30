@@ -45,6 +45,7 @@ def main() -> None:
     if not args.model_dir.joinpath("cosyvoice.yaml").is_file():
         raise FileNotFoundError(f"CosyVoice model is incomplete: {args.model_dir}")
     sys.path.insert(0, str(args.cosyvoice_dir))
+    sys.path.insert(0, str(args.cosyvoice_dir / "third_party" / "Matcha-TTS"))
     from cosyvoice.cli.cosyvoice import AutoModel  # pylint: disable=import-outside-toplevel
 
     # The project voice files are generated once; CPU avoids differences from a local GPU.
@@ -61,11 +62,16 @@ def main() -> None:
         for resource_name, text in entries:
             destination = args.output_dir / f"{resource_name}.ogg"
             wav_path = temporary_dir / f"{resource_name}.wav"
-            output = next(model.inference_sft(text, args.speaker, stream=False))
-            torchaudio.save(str(wav_path), output["tts_speech"], model.sample_rate)
+            chunks = [output["tts_speech"] for output in model.inference_sft(text, args.speaker, stream=False)]
+            if not chunks:
+                raise RuntimeError(f"CosyVoice produced no audio for {resource_name}")
+            # Text normalization can split an input into several inference results.
+            # Preserve every part instead of silently keeping only the first one.
+            speech = torch.cat(chunks, dim=1)
+            torchaudio.save(str(wav_path), speech, model.sample_rate)
             subprocess.run(
                 [ffmpeg, "-y", "-loglevel", "error", "-i", str(wav_path), "-ar", "22050", "-ac", "1",
-                 "-c:a", "libopus", "-b:a", "48k", str(destination)],
+                 "-c:a", "libvorbis", "-q:a", "4", str(destination)],
                 check=True,
             )
             if not destination.is_file() or destination.stat().st_size < 256:
