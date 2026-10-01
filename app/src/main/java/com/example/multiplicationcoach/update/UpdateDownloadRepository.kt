@@ -39,7 +39,8 @@ class UpdateDownloadRepository(private val transport: UpdateStreamTransport) {
                         if (read < 0) break
                         output.write(buffer, 0, read)
                         digest.update(buffer, 0, read)
-                        received += read
+                    if (received + read > asset.size) throw UpdateDownloadException("APK exceeds the signed size")
+                    received += read
                         onProgress(received, asset.size)
                     }
                 }

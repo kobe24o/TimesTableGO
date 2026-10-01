@@ -10,6 +10,10 @@ on:
 permissions:
   contents: write
 
+concurrency:
+  group: android-release-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -17,6 +21,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           lfs: true
+          persist-credentials: false
 
       - uses: actions/setup-java@v4
         with:
@@ -87,6 +92,7 @@ jobs:
           apksigner=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
           actual=$($apksigner verify --print-certs "${{ steps.apk.outputs.apk }}" | awk -F': ' '/certificate SHA-256 digest:/ {print tolower($2); exit}')
           expected=$(grep -oP 'UPDATE_CERTIFICATE_SHA256 = "\K[0-9a-f]+' app/src/main/java/com/example/multiplicationcoach/update/UpdateManifest.kt)
+          echo "Observed APK certificate: $actual"
           test "$actual" = "$expected" || { echo "::error::APK certificate does not match the pinned certificate"; exit 1; }
           echo "sha256=$actual" >> "$GITHUB_OUTPUT"
 
@@ -102,7 +108,11 @@ jobs:
             echo "::error::Release $tag already exists. Increment versionCode before publishing."
             exit 1
           fi
-          gh release create "$tag" "${{ steps.apk.outputs.apk }}" --title "乘法口诀背诵 ${{ steps.apk.outputs.version_name }}" --notes "固定签名 Android APK。\n\nSource commit: ${{ github.sha }}"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$tag" "${{ github.sha }}" -m "Release $tag"
+          git push "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git" "refs/tags/$tag"
+          gh release create "$tag" "${{ steps.apk.outputs.apk }}" --verify-tag --title "乘法口诀背诵 ${{ steps.apk.outputs.version_name }}" --notes "固定签名 Android APK。\n\nSource commit: ${{ github.sha }}"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
           echo "page_url=https://github.com/${{ github.repository }}/releases/tag/$tag" >> "$GITHUB_OUTPUT"
           echo "download_url=https://github.com/${{ github.repository }}/releases/download/$tag/$(basename '${{ steps.apk.outputs.apk }}')" >> "$GITHUB_OUTPUT"

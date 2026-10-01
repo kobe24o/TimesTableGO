@@ -57,7 +57,10 @@ class AndroidUpdateInstaller(private val context: Context) {
 
     fun openInstallPermission() {
         if (Build.VERSION.SDK_INT >= 26) {
-            context.startActivity(Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}")))
+            context.startActivity(
+                Intent(Settings.ACTION_MANAGE_UNKNOWN_APP_SOURCES, Uri.parse("package:${context.packageName}"))
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK),
+            )
         }
     }
 
@@ -68,7 +71,7 @@ class AndroidUpdateInstaller(private val context: Context) {
         context.startActivity(
             Intent(Intent.ACTION_INSTALL_PACKAGE)
                 .setDataAndType(uri, "application/vnd.android.package-archive")
-                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION),
+                .addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_ACTIVITY_NEW_TASK),
         )
     }
 

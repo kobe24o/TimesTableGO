@@ -41,6 +41,20 @@ class UpdateDownloadRepositoryTest {
     }
 
     @Test
+    fun stopsBeforeReportingOrWritingBytesBeyondTheSignedSize() = runBlocking {
+        val repository = UpdateDownloadRepository(UpdateStreamTransport { ByteArrayInputStream("abcd".toByteArray()) })
+        val progress = mutableListOf<Long>()
+
+        try {
+            repository.downloadAndVerify(asset(size = 3, sha256 = "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad"), temporaryFolder.root) { received, _ -> progress += received }
+            fail("Expected an oversized response to fail")
+        } catch (_: UpdateDownloadException) {
+            assertEquals(emptyList<Long>(), progress)
+            assertNoStagedApk()
+        }
+    }
+
+    @Test
     fun deletesThePartFileWhenTheSha256DoesNotMatch() = runBlocking {
         val repository = UpdateDownloadRepository(UpdateStreamTransport { ByteArrayInputStream("abc".toByteArray()) })
 
