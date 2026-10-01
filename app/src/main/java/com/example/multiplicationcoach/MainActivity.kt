@@ -50,6 +50,8 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
+import com.example.multiplicationcoach.update.AppUpdateUiState
+import com.example.multiplicationcoach.update.UpdateViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -304,17 +306,30 @@ private val allProblems = (1..9).flatMap { a -> (1..9).map { b -> Problem(a, b) 
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
-fun MultiplicationApp(viewModel: PracticeViewModel = viewModel()) {
+fun MultiplicationApp(
+    viewModel: PracticeViewModel = viewModel(),
+    updateViewModel: UpdateViewModel = viewModel(),
+) {
     val state by viewModel.state.collectAsState()
+    val updateState by updateViewModel.state.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { viewModel.refreshPermission() }
     var showSettings by remember { mutableStateOf(false) }
     LaunchedEffect(Unit) {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != 0) permission.launch(Manifest.permission.RECORD_AUDIO)
+        updateViewModel.checkForUpdates(automatic = true)
     }
     DisposableEffect(Unit) { onDispose { viewModel.stop() } }
     Scaffold(topBar = { TopAppBar(title = { Text(if (showSettings) "设置" else "乘法口诀背诵") }) }) { padding ->
-        if (showSettings) SettingsScreen(state, viewModel::updateSettings, { showSettings = false })
+        if (showSettings) SettingsScreen(
+            state = state,
+            update = viewModel::updateSettings,
+            updateState = updateState,
+            checkForUpdates = { updateViewModel.checkForUpdates(automatic = false) },
+            downloadUpdate = updateViewModel::downloadAvailableUpdate,
+            installUpdate = updateViewModel::installDownloadedUpdate,
+            close = { showSettings = false },
+        )
         else PracticeScreen(state, viewModel::start, viewModel::stop, viewModel::clearHistory, { showSettings = true }, Modifier.padding(padding))
     }
 }
@@ -344,7 +359,15 @@ fun PracticeScreen(state: UiState, start: () -> Unit, stop: () -> Unit, clear: (
 }
 
 @Composable
-fun SettingsScreen(state: UiState, update: (AppSettings) -> Unit, close: () -> Unit) {
+fun SettingsScreen(
+    state: UiState,
+    update: (AppSettings) -> Unit,
+    updateState: AppUpdateUiState,
+    checkForUpdates: () -> Unit,
+    downloadUpdate: () -> Unit,
+    installUpdate: () -> Unit,
+    close: () -> Unit,
+) {
     var draft by remember(state.settings) { mutableStateOf(state.settings) }
     LazyColumn(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
@@ -359,6 +382,34 @@ fun SettingsScreen(state: UiState, update: (AppSettings) -> Unit, close: () -> U
                 draft = draft.copy(answerTimeLimitSeconds = text.filter(Char::isDigit).toIntOrNull()?.coerceIn(1, 15) ?: 3)
                 update(draft)
             }, label = { Text("答题时间（秒）") })
+        }
+        item { Text("应用更新", fontWeight = FontWeight.Bold) }
+        item {
+            when (updateState) {
+                AppUpdateUiState.Idle -> Button(onClick = checkForUpdates) { Text("检查更新") }
+                AppUpdateUiState.Checking -> Text("正在安全检查更新…")
+                AppUpdateUiState.UpToDate -> Button(onClick = checkForUpdates) { Text("已是最新版本，重新检查") }
+                is AppUpdateUiState.Available -> {
+                    val suffix = if (updateState.mobileData) "当前为移动数据，需你确认后下载。" else "已发现可用更新。"
+                    Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Text("发现新版本 " + updateState.manifest.version.versionName + "。" + suffix)
+                        Button(onClick = downloadUpdate) { Text("下载更新") }
+                    }
+                }
+                is AppUpdateUiState.Downloading -> Text(
+                    "正在下载更新：" + updateState.receivedBytes / 1024 / 1024 + " / " + updateState.totalBytes / 1024 / 1024 + " MB",
+                )
+                is AppUpdateUiState.ReadyToInstall -> Button(onClick = installUpdate) { Text("安装已验证的更新") }
+                is AppUpdateUiState.NeedsInstallPermission -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text("请先允许本应用安装更新，再返回点此继续。")
+                    Button(onClick = installUpdate) { Text("允许安装并继续") }
+                }
+                AppUpdateUiState.Installing -> Text("已交给 Android 系统安装器确认安装。")
+                is AppUpdateUiState.Error -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Text(updateState.message, color = Color(0xFFB23A48))
+                    Button(onClick = checkForUpdates) { Text("重试检查") }
+                }
+            }
         }
         item { Button(onClick = close) { Text("返回练习") } }
     }
