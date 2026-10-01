@@ -90,7 +90,7 @@ jobs:
         shell: bash
         run: |
           apksigner=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
-          actual=$($apksigner verify --print-certs "${{ steps.apk.outputs.apk }}" | awk -F': ' '/certificate SHA-256 digest:/ {print tolower($2); exit}')
+          actual=$($apksigner verify --print-certs "${{ steps.apk.outputs.apk }}" | awk -F 'certificate SHA-256 digest: ' '/certificate SHA-256 digest:/ {print tolower($2); exit}')
           expected=$(grep -oP 'UPDATE_CERTIFICATE_SHA256 = "\K[0-9a-f]+' app/src/main/java/com/example/multiplicationcoach/update/UpdateManifest.kt)
           echo "Observed APK certificate: $actual"
           test "$actual" = "$expected" || { echo "::error::APK certificate does not match the pinned certificate"; exit 1; }
