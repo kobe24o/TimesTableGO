@@ -2,6 +2,8 @@ package com.example.multiplicationcoach
 
 import android.content.Context
 import android.media.MediaPlayer
+import kotlin.coroutines.resume
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 data class LocalVerification(
     val correct: Boolean,
@@ -43,8 +45,12 @@ data class FixedAudioPlayback(
 class FixedAudioPlayer(private val context: Context) {
     private var current: MediaPlayer? = null
 
-    fun playProblem(problem: Problem): FixedAudioPlayback =
-        play(PromptAudioIndex.problemResourceName(problem.a, problem.b))
+    /**
+     * A question must finish playing before the answer timer and microphone start.
+     * Otherwise a child loses answer time while listening to the question.
+     */
+    suspend fun playProblemAndWait(problem: Problem): FixedAudioPlayback =
+        playAndWait(PromptAudioIndex.problemResourceName(problem.a, problem.b))
 
     fun playFeedback(feedback: FixedFeedback): FixedAudioPlayback =
         play(PromptAudioIndex.feedbackResourceName(feedback))
@@ -73,6 +79,41 @@ class FixedAudioPlayer(private val context: Context) {
         }.getOrElse {
             stop()
             resolution.copy(played = false, userMessage = "音频播放失败，已改为文字提示。")
+        }
+    }
+
+    private suspend fun playAndWait(resourceName: String): FixedAudioPlayback {
+        stop()
+        val resourceId = context.resources.getIdentifier(resourceName, "raw", context.packageName)
+        val resolution = FixedAudioPlayback.resolve(resourceId, resourceName)
+        if (!resolution.played) return resolution
+
+        return suspendCancellableCoroutine { continuation ->
+            val player = runCatching { MediaPlayer.create(context, resourceId) }.getOrNull()
+            if (player == null) {
+                continuation.resume(resolution.copy(played = false, userMessage = "音频播放失败，已改为文字提示。"))
+                return@suspendCancellableCoroutine
+            }
+
+            current = player
+            fun finish(result: FixedAudioPlayback) {
+                if (current === player) current = null
+                player.release()
+                if (continuation.isActive) continuation.resume(result)
+            }
+            player.setOnCompletionListener { finish(resolution) }
+            player.setOnErrorListener { _, _, _ ->
+                finish(resolution.copy(played = false, userMessage = "音频播放失败，已改为文字提示。"))
+                true
+            }
+            continuation.invokeOnCancellation {
+                if (current === player) current = null
+                player.runCatching { stop() }
+                player.release()
+            }
+            runCatching { player.start() }.onFailure {
+                finish(resolution.copy(played = false, userMessage = "音频播放失败，已改为文字提示。"))
+            }
         }
     }
 }

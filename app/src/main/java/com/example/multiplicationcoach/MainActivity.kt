@@ -8,9 +8,6 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Bundle
-import android.speech.RecognitionListener
-import android.speech.RecognizerIntent
-import android.speech.SpeechRecognizer
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -53,8 +50,6 @@ import androidx.core.content.ContextCompat
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import androidx.lifecycle.viewmodel.compose.viewModel
-import java.util.Locale
-import kotlin.coroutines.resume
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -62,7 +57,6 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
-import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import org.json.JSONArray
 import org.json.JSONObject
@@ -92,7 +86,6 @@ data class Attempt(
 
 data class AppSettings(
     val promptAudioEnabled: Boolean = true,
-    val asrProvider: String = ASR_LOCAL,
     val answerTimeLimitSeconds: Int = 3,
 )
 
@@ -114,7 +107,6 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
     private val prefs = PracticePrefs(application)
     private val localAsr = LocalAsrEngine()
     private val player = FixedAudioPlayer(application)
-    private var recognizer: SpeechRecognizer? = null
     private var practiceJob: Job? = null
     private var stopped = false
 
@@ -135,7 +127,7 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
                 },
                 onFailure = { error ->
                     _state.value = _state.value.copy(
-                        localAsrReason = "离线识别不可用：" + error.message.orEmpty() + "。可切换系统识别。",
+                        localAsrReason = "离线识别不可用：" + error.message.orEmpty(),
                     )
                 },
             )
@@ -148,7 +140,6 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
 
     fun updateSettings(settings: AppSettings) {
         val normalized = settings.copy(
-            asrProvider = if (settings.asrProvider == ASR_SYSTEM) ASR_SYSTEM else ASR_LOCAL,
             answerTimeLimitSeconds = settings.answerTimeLimitSeconds.coerceIn(1, 15),
         )
         prefs.saveSettings(normalized)
@@ -157,7 +148,7 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
 
     fun start() {
         if (_state.value.running) return
-        if (_state.value.settings.asrProvider == ASR_LOCAL && !_state.value.localAsrReady) {
+        if (!_state.value.localAsrReady) {
             _state.value = _state.value.copy(feedback = _state.value.localAsrReason.orEmpty())
             return
         }
@@ -174,7 +165,6 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
     fun stop() {
         stopped = true
         practiceJob?.cancel()
-        recognizer?.cancel()
         player.stop()
         _state.value = _state.value.copy(running = false, countdown = 0, phase = "已停止", feedback = "已停止练习。")
     }
@@ -192,7 +182,7 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
             feedback = problem.label + " = ?",
         )
         if (_state.value.settings.promptAudioEnabled) {
-            player.playProblem(problem).userMessage?.let { message ->
+            player.playProblemAndWait(problem).userMessage?.let { message ->
                 _state.value = _state.value.copy(feedback = message)
             }
         }
@@ -207,11 +197,10 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
                 delay(1000)
             }
         }
-        val transcript = if (_state.value.settings.asrProvider == ASR_SYSTEM) systemAsr(seconds) else localAsr(seconds)
+        val transcript = localAsr(seconds)
         timer.cancel()
         if (stopped) return
-        val checkedBy = if (_state.value.settings.asrProvider == ASR_SYSTEM) "system" else "local"
-        val result = LocalAnswerVerifier.verify(problem.answer, transcript, checkedBy)
+        val result = LocalAnswerVerifier.verify(problem.answer, transcript)
         val message = if (result.correct) {
             "答对了：" + problem.label + " = " + problem.answer
         } else {
@@ -240,46 +229,6 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    private suspend fun systemAsr(seconds: Int): String = suspendCancellableCoroutine { continuation ->
-        recognizer?.destroy()
-        val systemRecognizer = SpeechRecognizer.createSpeechRecognizer(getApplication())
-        recognizer = systemRecognizer
-        var completed = false
-        fun finish(value: String) {
-            if (completed) return
-            completed = true
-            systemRecognizer.stopListening()
-            continuation.resume(value)
-        }
-        systemRecognizer.setRecognitionListener(object : RecognitionListener {
-            override fun onReadyForSpeech(params: Bundle?) = Unit
-            override fun onBeginningOfSpeech() = Unit
-            override fun onRmsChanged(rmsdB: Float) = Unit
-            override fun onBufferReceived(buffer: ByteArray?) = Unit
-            override fun onEndOfSpeech() = Unit
-            override fun onEvent(eventType: Int, params: Bundle?) = Unit
-            override fun onError(error: Int) = finish("")
-            override fun onPartialResults(results: Bundle?) {
-                results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull()?.let { partial ->
-                    _state.value = _state.value.copy(transcript = partial)
-                }
-            }
-            override fun onResults(results: Bundle?) {
-                finish(results?.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION)?.firstOrNull().orEmpty())
-            }
-        })
-        systemRecognizer.startListening(android.content.Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH).apply {
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM)
-            putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.SIMPLIFIED_CHINESE.toLanguageTag())
-            putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, true)
-        })
-        viewModelScope.launch {
-            delay(seconds * 1000L + 200)
-            finish(_state.value.transcript.takeUnless { it.endsWith("…") }.orEmpty())
-        }
-        continuation.invokeOnCancellation { systemRecognizer.cancel() }
-    }
-
     private fun save(
         problem: Problem, transcript: String, answer: Int?, correct: Boolean, checkedBy: String, feedback: String,
     ) {
@@ -289,7 +238,6 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
     }
 
     override fun onCleared() {
-        recognizer?.destroy()
         player.stop()
         localAsr.release()
         super.onCleared()
@@ -326,12 +274,10 @@ class PracticePrefs(context: Context) {
     private val prefs = context.getSharedPreferences("practice", Context.MODE_PRIVATE)
     fun loadSettings(): AppSettings = AppSettings(
         promptAudioEnabled = prefs.getBoolean("promptAudioEnabled", true),
-        asrProvider = if (prefs.getString("asrProvider", ASR_LOCAL) == ASR_SYSTEM) ASR_SYSTEM else ASR_LOCAL,
         answerTimeLimitSeconds = prefs.getInt("answerTimeLimitSeconds", 3).coerceIn(1, 15),
     )
     fun saveSettings(settings: AppSettings) {
         prefs.edit().putBoolean("promptAudioEnabled", settings.promptAudioEnabled)
-            .putString("asrProvider", settings.asrProvider)
             .putInt("answerTimeLimitSeconds", settings.answerTimeLimitSeconds).apply()
     }
     fun loadAttempts(): List<Attempt> = runCatching {
@@ -354,8 +300,6 @@ class PracticePrefs(context: Context) {
     }
 }
 
-const val ASR_LOCAL = "local"
-const val ASR_SYSTEM = "system"
 private val allProblems = (1..9).flatMap { a -> (1..9).map { b -> Problem(a, b) } }
 
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
@@ -407,13 +351,6 @@ fun SettingsScreen(state: UiState, update: (AppSettings) -> Unit, close: () -> U
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Column(Modifier.weight(1f)) { Text("题目音频", fontWeight = FontWeight.Bold); Text("内置中文音频，不联网。") }
                 Switch(checked = draft.promptAudioEnabled, onCheckedChange = { value -> draft = draft.copy(promptAudioEnabled = value); update(draft) })
-            }
-        }
-        item { Text("离线 ASR 是默认模式；系统 ASR 仅作显式后备。") }
-        item {
-            Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                Button(onClick = { draft = draft.copy(asrProvider = ASR_LOCAL); update(draft) }) { Text("本地 ASR") }
-                Button(onClick = { draft = draft.copy(asrProvider = ASR_SYSTEM); update(draft) }) { Text("系统 ASR") }
             }
         }
         item { Text(if (state.localAsrReady) "本地 ASR 已就绪：语音不会上传。" else state.localAsrReason.orEmpty()) }
