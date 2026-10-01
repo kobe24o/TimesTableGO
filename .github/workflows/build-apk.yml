@@ -1,14 +1,10 @@
-name: Build APK
+name: Build and publish Android APK
 
 on:
   push:
-    branches:
-      - main
-      - master
+    branches: [main]
   pull_request:
-    branches:
-      - main
-      - master
+    branches: [main]
   workflow_dispatch:
 
 permissions:
@@ -16,37 +12,32 @@ permissions:
 
 jobs:
   build:
-    name: Build APK
     runs-on: ubuntu-latest
-
     steps:
-      - name: Checkout
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
         with:
           lfs: true
 
-      - name: Set up JDK
-        uses: actions/setup-java@v4
+      - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Gradle
-        uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: "8.9"
+
+      - name: Test app
+        run: gradle :app:testDebugUnitTest --no-daemon
 
       - name: Restore release signing keystore
         if: github.event_name != 'pull_request'
         env:
           ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
         run: |
-          if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "::error::Missing ANDROID_KEYSTORE_BASE64 secret. Add release signing secrets before publishing APK."
-            exit 1
-          fi
+          test -n "$ANDROID_KEYSTORE_BASE64" || { echo "::error::Missing ANDROID_KEYSTORE_BASE64"; exit 1; }
           mkdir -p app/keystore
-          echo "$ANDROID_KEYSTORE_BASE64" | base64 --decode > app/keystore/release.jks
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | base64 --decode > app/keystore/release.jks
 
       - name: Build signed release APK
         if: github.event_name != 'pull_request'
@@ -56,43 +47,104 @@ jobs:
           SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
-          if [ -z "$SIGNING_STORE_PASSWORD" ] || [ -z "$SIGNING_KEY_ALIAS" ] || [ -z "$SIGNING_KEY_PASSWORD" ]; then
-            echo "::error::Missing one or more signing secrets: ANDROID_KEYSTORE_PASSWORD, ANDROID_KEY_ALIAS, ANDROID_KEY_PASSWORD."
-            exit 1
-          fi
+          test -n "$SIGNING_STORE_PASSWORD" && test -n "$SIGNING_KEY_ALIAS" && test -n "$SIGNING_KEY_PASSWORD" || { echo "::error::Missing Android signing secret"; exit 1; }
           gradle :app:assembleRelease --no-daemon
 
       - name: Build debug APK
         if: github.event_name == 'pull_request'
         run: gradle :app:assembleDebug --no-daemon
 
-      - name: Prepare APK
+      - name: Prepare versioned APK
+        id: apk
+        shell: bash
         run: |
+          version_name=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
+          version_code=$(grep -oP 'versionCode = \K[0-9]+' app/build.gradle.kts)
           mkdir -p release
           if [ "${{ github.event_name }}" = "pull_request" ]; then
-            cp app/build/outputs/apk/debug/*.apk release/multiplication-coach-debug.apk
+            apk=release/multiplication-coach-debug.apk
+            cp app/build/outputs/apk/debug/*.apk "$apk"
           else
-            cp app/build/outputs/apk/release/*.apk release/multiplication-coach-release.apk
+            apk="release/multiplication-coach-${version_name}-${version_code}.apk"
+            cp app/build/outputs/apk/release/*.apk "$apk"
           fi
+          echo "apk=$apk" >> "$GITHUB_OUTPUT"
+          echo "version_name=$version_name" >> "$GITHUB_OUTPUT"
+          echo "version_code=$version_code" >> "$GITHUB_OUTPUT"
 
-      - name: Upload APK
+      - name: Upload APK artifact
         uses: actions/upload-artifact@v4
         with:
           name: multiplication-coach-apk
           path: release/*.apk
           if-no-files-found: error
 
-      - name: Publish APK to GitHub Release
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-        uses: ncipollo/release-action@v1
-        with:
-          tag: latest
-          name: Latest Debug APK
-          body: |
-            自动构建的固定签名 release APK。
+      - name: Verify APK signing certificate
+        if: github.event_name != 'pull_request'
+        id: certificate
+        shell: bash
+        run: |
+          apksigner=$(find "$ANDROID_HOME/build-tools" -type f -name apksigner | sort -V | tail -1)
+          actual=$($apksigner verify --print-certs "${{ steps.apk.outputs.apk }}" | awk -F': ' '/certificate SHA-256 digest:/ {print tolower($2); exit}')
+          expected=$(grep -oP 'UPDATE_CERTIFICATE_SHA256 = "\K[0-9a-f]+' app/src/main/java/com/example/multiplicationcoach/update/UpdateManifest.kt)
+          test "$actual" = "$expected" || { echo "::error::APK certificate does not match the pinned certificate"; exit 1; }
+          echo "sha256=$actual" >> "$GITHUB_OUTPUT"
 
-            Source commit: ${{ github.sha }}
-          artifacts: release/multiplication-coach-release.apk
-          allowUpdates: true
-          replacesArtifacts: true
-          makeLatest: true
+      - name: Publish immutable GitHub Release
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tag="v${{ steps.apk.outputs.version_name }}-${{ steps.apk.outputs.version_code }}"
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::Release $tag already exists. Increment versionCode before publishing."
+            exit 1
+          fi
+          gh release create "$tag" "${{ steps.apk.outputs.apk }}" --title "乘法口诀背诵 ${{ steps.apk.outputs.version_name }}" --notes "固定签名 Android APK。\n\nSource commit: ${{ github.sha }}"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "page_url=https://github.com/${{ github.repository }}/releases/tag/$tag" >> "$GITHUB_OUTPUT"
+          echo "download_url=https://github.com/${{ github.repository }}/releases/download/$tag/$(basename '${{ steps.apk.outputs.apk }}')" >> "$GITHUB_OUTPUT"
+
+      - name: Restore update manifest signing key
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          UPDATE_MANIFEST_PRIVATE_KEY_B64: ${{ secrets.UPDATE_MANIFEST_PRIVATE_KEY_B64 }}
+        shell: bash
+        run: |
+          test -n "$UPDATE_MANIFEST_PRIVATE_KEY_B64" || { echo "::error::Missing UPDATE_MANIFEST_PRIVATE_KEY_B64"; exit 1; }
+          printf '%s' "$UPDATE_MANIFEST_PRIVATE_KEY_B64" | base64 --decode > "$RUNNER_TEMP/update-manifest-private.pem"
+          chmod 600 "$RUNNER_TEMP/update-manifest-private.pem"
+
+      - name: Create signed update feed
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        run: |
+          tools/create_update_envelope.sh \
+            --apk "${{ steps.apk.outputs.apk }}" \
+            --version-name "${{ steps.apk.outputs.version_name }}" \
+            --version-code "${{ steps.apk.outputs.version_code }}" \
+            --source-commit "${{ github.sha }}" \
+            --release-page-url "${{ steps.release.outputs.page_url }}" \
+            --download-url "${{ steps.release.outputs.download_url }}" \
+            --certificate "${{ steps.certificate.outputs.sha256 }}" \
+            --private-key "$RUNNER_TEMP/update-manifest-private.pem" \
+            --output release/latest.json
+
+      - name: Publish signed update feed
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          feed_dir=$(mktemp -d)
+          git -C "$feed_dir" init -q
+          git -C "$feed_dir" config user.name "github-actions[bot]"
+          git -C "$feed_dir" config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git -C "$feed_dir" checkout --orphan update-feed -q
+          mkdir -p "$feed_dir/updates"
+          cp release/latest.json "$feed_dir/updates/latest.json"
+          git -C "$feed_dir" add updates/latest.json
+          git -C "$feed_dir" commit -m "Publish Android update ${{ steps.apk.outputs.version_name }}+${{ steps.apk.outputs.version_code }}" -q
+          git -C "$feed_dir" remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${{ github.repository }}.git"
+          git -C "$feed_dir" push --force origin HEAD:refs/heads/update-feed
