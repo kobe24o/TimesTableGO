@@ -47,6 +47,7 @@ data class UpdateManifest(
 
             require(packageName == UPDATE_PACKAGE_NAME) { "Unexpected package name" }
             require(fileName.endsWith(".apk", ignoreCase = true)) { "APK filename is required" }
+            require(fileName.matches(Regex("[A-Za-z0-9._-]+"))) { "APK filename is unsafe" }
             require(size > 0) { "APK size must be positive" }
             require(sha256.matches(Regex("[0-9a-f]{64}"))) { "Invalid APK SHA-256" }
             require(certificate == UPDATE_CERTIFICATE_SHA256) { "Unexpected APK certificate" }

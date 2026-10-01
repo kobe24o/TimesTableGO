@@ -5,6 +5,7 @@ import java.io.File
 import java.net.URL
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertArrayEquals
+import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Assert.fail
@@ -22,6 +23,7 @@ class UpdateDownloadRepositoryTest {
         val apk = repository.downloadAndVerify(asset(size = 3), temporaryFolder.root) { _, _ -> }
 
         assertTrue(apk.isFile)
+        assertEquals("multiplication-coach-0.1.2-3.apk", apk.name)
         assertArrayEquals("abc".toByteArray(), apk.readBytes())
         assertFalse(File(apk.path + ".part").exists())
     }
@@ -52,8 +54,8 @@ class UpdateDownloadRepositoryTest {
 
     private fun assertNoStagedApk() {
         val updates = File(temporaryFolder.root, "updates")
-        assertFalse(File(updates, "3.apk").exists())
-        assertFalse(File(updates, "3.apk.part").exists())
+        assertFalse(File(updates, "multiplication-coach-0.1.2-3.apk").exists())
+        assertFalse(File(updates, "multiplication-coach-0.1.2-3.apk.part").exists())
     }
 
     private fun asset(

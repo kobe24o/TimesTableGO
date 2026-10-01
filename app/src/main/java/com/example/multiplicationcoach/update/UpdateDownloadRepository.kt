@@ -22,7 +22,7 @@ class UpdateDownloadRepository(private val transport: UpdateStreamTransport) {
         onProgress: (received: Long, total: Long) -> Unit,
     ): File = withContext(Dispatchers.IO) {
         val updates = File(cacheDir, "updates")
-        val staged = File(updates, "${asset.size}.apk")
+        val staged = File(updates, asset.fileName)
         val partial = File(staged.path + ".part")
         updates.mkdirs()
         staged.delete()
