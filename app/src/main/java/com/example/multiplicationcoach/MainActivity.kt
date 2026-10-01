@@ -384,6 +384,7 @@ fun SettingsScreen(
             }, label = { Text("答题时间（秒）") })
         }
         item { Text("应用更新", fontWeight = FontWeight.Bold) }
+        item { Text("当前版本 " + BuildConfig.VERSION_NAME + "（" + BuildConfig.VERSION_CODE + "）") }
         item {
             when (updateState) {
                 AppUpdateUiState.Idle -> Button(onClick = checkForUpdates) { Text("检查更新") }
