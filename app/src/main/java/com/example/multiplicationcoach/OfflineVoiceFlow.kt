@@ -58,6 +58,8 @@ class FixedAudioPlayer(private val context: Context) {
     fun playCorrection(problem: Problem): FixedAudioPlayback =
         play(PromptAudioIndex.correctionResourceName(problem.a, problem.b))
 
+    suspend fun playResourceAndWait(resourceName: String): FixedAudioPlayback = playAndWait(resourceName)
+
     fun stop() {
         current?.runCatching { stop() }
         current?.release()
@@ -118,5 +120,35 @@ class FixedAudioPlayer(private val context: Context) {
                 finish(resolution.copy(played = false, userMessage = "音频播放失败，已改为文字提示。"))
             }
         }
+    }
+}
+
+/** Decides whether an answer can be scored and makes every feedback cue blocking. */
+data class PracticeAnswerPlan(
+    val repeatProblem: Boolean,
+    val verification: LocalVerification?,
+    val audioResourceName: String,
+    val waitForAudioCompletion: Boolean = true,
+)
+
+object PracticeAnswerPlanner {
+    fun plan(problem: Problem, transcript: String): PracticeAnswerPlan {
+        if (transcript.isBlank()) {
+            return PracticeAnswerPlan(
+                repeatProblem = true,
+                verification = null,
+                audioResourceName = PromptAudioIndex.feedbackResourceName(FixedFeedback.NoSpeech),
+            )
+        }
+        val verification = LocalAnswerVerifier.verify(problem.answer, transcript)
+        return PracticeAnswerPlan(
+            repeatProblem = false,
+            verification = verification,
+            audioResourceName = if (verification.correct) {
+                PromptAudioIndex.feedbackResourceName(FixedFeedback.Correct)
+            } else {
+                PromptAudioIndex.correctionResourceName(problem.a, problem.b)
+            },
+        )
     }
 }

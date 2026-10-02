@@ -157,8 +157,10 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         stopped = false
         _state.value = _state.value.copy(running = true, feedback = "练习开始：语音、转写和判题都在本机完成。")
         practiceJob = viewModelScope.launch {
+            var retryProblem: Problem? = null
             while (!stopped) {
-                askOneProblem()
+                val problem = retryProblem ?: allProblems.random()
+                retryProblem = if (askOneProblem(problem)) problem else null
                 delay(800)
             }
         }
@@ -176,22 +178,33 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         _state.value = _state.value.copy(attempts = emptyList(), feedback = "历史记录已清空。")
     }
 
-    private suspend fun askOneProblem() {
-        val problem = allProblems.random()
+    private suspend fun askOneProblem(problem: Problem): Boolean {
         val seconds = _state.value.settings.answerTimeLimitSeconds
         _state.value = _state.value.copy(
             problem = problem, phase = "读题", transcript = "", countdown = seconds,
             feedback = problem.label + " = ?",
         )
-        if (_state.value.settings.promptAudioEnabled) {
-            player.playProblemAndWait(problem).userMessage?.let { message ->
-                _state.value = _state.value.copy(feedback = message)
-            }
-        }
         if (!_state.value.hasAudioPermission) {
             save(problem, "", null, false, "local", "缺少麦克风权限。正确答案：" + problem.answer)
-            return
+            return false
         }
+        // Initialize the microphone before the question ends so an immediate answer
+        // cannot lose its first syllable while AudioRecord is being created.
+        val recorder = runCatching { withContext(Dispatchers.IO) { PcmRecorder.prepare() } }
+            .getOrElse { error ->
+                _state.value = _state.value.copy(
+                    phase = "录音失败",
+                    countdown = 0,
+                    feedback = "麦克风录音失败：" + error.message.orEmpty(),
+                )
+                return false
+            }
+        try {
+            if (_state.value.settings.promptAudioEnabled) {
+                player.playProblemAndWait(problem).userMessage?.let { message ->
+                    _state.value = _state.value.copy(feedback = message)
+                }
+            }
         _state.value = _state.value.copy(phase = "请作答", feedback = "请在 " + seconds + " 秒内说出答案。")
         val timer = viewModelScope.launch {
             for (second in seconds downTo 1) {
@@ -199,9 +212,9 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
                 delay(1000)
             }
         }
-        val recognition = localAsr(seconds)
+        val recognition = localAsr(seconds, recorder)
         timer.cancel()
-        if (stopped) return
+        if (stopped) return false
         val transcript = recognition.getOrElse { error ->
             _state.value = _state.value.copy(
                 phase = "录音失败",
@@ -209,9 +222,22 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
                 transcript = "",
                 feedback = "麦克风录音失败：" + error.message.orEmpty(),
             )
-            return
+            return false
         }
-        val result = LocalAnswerVerifier.verify(problem.answer, transcript)
+        val plan = PracticeAnswerPlanner.plan(problem, transcript)
+        if (plan.repeatProblem) {
+            _state.value = _state.value.copy(
+                phase = "未识别",
+                countdown = 0,
+                transcript = "未识别到语音",
+                feedback = "没有识别到答案，请再说一次。",
+            )
+            if (_state.value.settings.promptAudioEnabled && plan.waitForAudioCompletion) {
+                player.playResourceAndWait(plan.audioResourceName)
+            }
+            return true
+        }
+        val result = checkNotNull(plan.verification)
         val message = if (result.correct) {
             "答对了：" + problem.label + " = " + problem.answer
         } else {
@@ -223,15 +249,19 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
             transcript = transcript.ifBlank { "未识别到语音" },
             feedback = message,
         )
-        if (_state.value.settings.promptAudioEnabled) {
-            if (result.correct) player.playFeedback(FixedFeedback.Correct) else player.playCorrection(problem)
+        if (_state.value.settings.promptAudioEnabled && plan.waitForAudioCompletion) {
+            player.playResourceAndWait(plan.audioResourceName)
         }
         save(problem, transcript, result.extractedAnswer, result.correct, result.checkedBy, message)
+        return false
+        } finally {
+            recorder.release()
+        }
     }
 
-    private suspend fun localAsr(seconds: Int): Result<String> {
+    private suspend fun localAsr(seconds: Int, recorder: PcmRecorder.PreparedRecorder): Result<String> {
         _state.value = _state.value.copy(transcript = "正在本地录音…")
-        val pcm = runCatching { withContext(Dispatchers.IO) { PcmRecorder.recordSeconds(seconds) } }
+        val pcm = runCatching { withContext(Dispatchers.IO) { recorder.recordSeconds(seconds) } }
             .getOrElse { return Result.failure(it) }
         if (stopped) return Result.success("")
         _state.value = _state.value.copy(transcript = "正在本地识别…")
@@ -259,32 +289,61 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
 }
 
 object PcmRecorder {
-    @SuppressLint("MissingPermission")
-    fun recordSeconds(seconds: Int): ByteArray {
-        val sampleRate = 16_000
-        val bufferSize = AudioRecord.getMinBufferSize(sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT).coerceAtLeast(sampleRate / 5)
-        val output = ByteArray(seconds.coerceIn(1, 15) * sampleRate * 2)
-        val recorder = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize)
-        try {
-            check(recorder.state == AudioRecord.STATE_INITIALIZED) { "麦克风录音不可用" }
-            recorder.startRecording()
-            var offset = 0
-            while (offset < output.size) {
-                val read = recorder.read(
-                    output,
-                    offset,
-                    minOf(bufferSize, output.size - offset),
-                    AudioRecord.READ_BLOCKING,
-                )
-                check(read > 0) { "麦克风录音中断：$read" }
-                offset += read
+    class PreparedRecorder internal constructor(
+        private val recorder: AudioRecord,
+        private val bufferSize: Int,
+    ) {
+        private var released = false
+
+        fun recordSeconds(seconds: Int): ByteArray {
+            check(!released) { "麦克风录音器已释放" }
+            val output = ByteArray(seconds.coerceIn(1, 15) * PCM_SAMPLE_RATE * 2)
+            try {
+                recorder.startRecording()
+                var offset = 0
+                while (offset < output.size) {
+                    val read = recorder.read(
+                        output,
+                        offset,
+                        minOf(bufferSize, output.size - offset),
+                        AudioRecord.READ_BLOCKING,
+                    )
+                    check(read > 0) { "麦克风录音中断：$read" }
+                    offset += read
+                }
+                return output
+            } finally {
+                release()
             }
-            return output
-        } finally {
+        }
+
+        fun release() {
+            if (released) return
+            released = true
             runCatching { recorder.stop() }
             recorder.release()
         }
     }
+
+    @SuppressLint("MissingPermission")
+    fun prepare(): PreparedRecorder {
+        val bufferSize = AudioRecord.getMinBufferSize(
+            PCM_SAMPLE_RATE,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+        ).coerceAtLeast(PCM_SAMPLE_RATE / 5)
+        val recorder = AudioRecord(
+            MediaRecorder.AudioSource.MIC,
+            PCM_SAMPLE_RATE,
+            AudioFormat.CHANNEL_IN_MONO,
+            AudioFormat.ENCODING_PCM_16BIT,
+            bufferSize,
+        )
+        check(recorder.state == AudioRecord.STATE_INITIALIZED) { "麦克风录音不可用" }
+        return PreparedRecorder(recorder, bufferSize)
+    }
+
+    private const val PCM_SAMPLE_RATE = 16_000
 }
 
 class PracticePrefs(context: Context) {
