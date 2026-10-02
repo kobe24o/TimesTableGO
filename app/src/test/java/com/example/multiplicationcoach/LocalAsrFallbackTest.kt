@@ -19,4 +19,24 @@ class LocalAsrFallbackTest {
             LocalAsrTranscriptFallback.choose(vadTranscript = "三十六", fullRecordingTranscript = ""),
         )
     }
+
+    @Test
+    fun usesTheFullRecordingWhenVadOnlyProducedNonNumericSpeech() {
+        assertEquals(
+            "二十一",
+            LocalAsrTranscriptFallback.choose(vadTranscript = "是", fullRecordingTranscript = "二十一"),
+        )
+    }
+
+    @Test
+    fun prefersTheFullRecordingWhenItMatchesTheExpectedAnswer() {
+        assertEquals(
+            "二十一",
+            LocalAsrTranscriptFallback.choose(
+                vadTranscript = "二十",
+                fullRecordingTranscript = "二十一",
+                expectedAnswer = 21,
+            ),
+        )
+    }
 }

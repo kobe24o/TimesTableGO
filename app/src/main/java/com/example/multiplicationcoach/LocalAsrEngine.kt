@@ -55,7 +55,7 @@ class LocalAsrEngine {
         )
     }
 
-    suspend fun transcribe(pcm: ByteArray): Result<String> = withContext(Dispatchers.Default) {
+    suspend fun transcribe(pcm: ByteArray, expectedAnswer: Int): Result<String> = withContext(Dispatchers.Default) {
         runCatching {
             if (pcm.size < 2) return@runCatching ""
             val samples = pcm.toPcmFloatArray()
@@ -81,12 +81,16 @@ class LocalAsrEngine {
                         }
                     }
                 }.joinToString(separator = "")
-                val fullRecordingTranscript = if (vadTranscript.isBlank()) {
-                    currentRecognizer.decodeWholeRecording(samples)
-                } else {
-                    ""
-                }
-                LocalAsrTranscriptFallback.choose(vadTranscript, fullRecordingTranscript)
+                // A short digit answer can be cut by VAD into a plausible but wrong
+                // syllable (for example, "二十一" becoming "是"). Decode both the
+                // VAD segment and the complete answer window, then select the result
+                // that best matches this multiplication question's closed answer set.
+                val fullRecordingTranscript = currentRecognizer.decodeWholeRecording(samples)
+                LocalAsrTranscriptFallback.choose(
+                    vadTranscript = vadTranscript,
+                    fullRecordingTranscript = fullRecordingTranscript,
+                    expectedAnswer = expectedAnswer,
+                )
             }
         }
     }
@@ -123,6 +127,19 @@ class LocalAsrEngine {
 
 /** Keeps short valid answers recognisable when voice activity detection yields no segment. */
 object LocalAsrTranscriptFallback {
-    fun choose(vadTranscript: String, fullRecordingTranscript: String): String =
-        vadTranscript.ifBlank { fullRecordingTranscript }
+    fun choose(
+        vadTranscript: String,
+        fullRecordingTranscript: String,
+        expectedAnswer: Int? = null,
+    ): String {
+        val vadAnswer = AnswerTranscriptParser.parse(vadTranscript)
+        val fullAnswer = AnswerTranscriptParser.parse(fullRecordingTranscript)
+        return when {
+            expectedAnswer != null && vadAnswer == expectedAnswer -> vadTranscript
+            expectedAnswer != null && fullAnswer == expectedAnswer -> fullRecordingTranscript
+            vadAnswer != null -> vadTranscript
+            fullAnswer != null -> fullRecordingTranscript
+            else -> vadTranscript.ifBlank { fullRecordingTranscript }
+        }
+    }
 }

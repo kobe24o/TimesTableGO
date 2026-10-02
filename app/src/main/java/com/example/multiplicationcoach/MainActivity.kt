@@ -212,7 +212,7 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
                 delay(1000)
             }
         }
-        val recognition = localAsr(seconds, recorder)
+        val recognition = localAsr(seconds, recorder, problem.answer)
         timer.cancel()
         if (stopped) return false
         val transcript = recognition.getOrElse { error ->
@@ -259,13 +259,17 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         }
     }
 
-    private suspend fun localAsr(seconds: Int, recorder: PcmRecorder.PreparedRecorder): Result<String> {
+    private suspend fun localAsr(
+        seconds: Int,
+        recorder: PcmRecorder.PreparedRecorder,
+        expectedAnswer: Int,
+    ): Result<String> {
         _state.value = _state.value.copy(transcript = "正在本地录音…")
         val pcm = runCatching { withContext(Dispatchers.IO) { recorder.recordSeconds(seconds) } }
             .getOrElse { return Result.failure(it) }
         if (stopped) return Result.success("")
         _state.value = _state.value.copy(transcript = "正在本地识别…")
-        return localAsr.transcribe(pcm).onFailure { error ->
+        return localAsr.transcribe(pcm, expectedAnswer).onFailure { error ->
             _state.value = _state.value.copy(feedback = "离线识别失败：" + error.message.orEmpty())
         }
     }
