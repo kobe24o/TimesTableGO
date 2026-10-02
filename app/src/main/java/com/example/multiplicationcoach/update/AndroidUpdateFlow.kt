@@ -34,31 +34,48 @@ sealed interface AppUpdateUiState {
     data class Error(val message: String) : AppUpdateUiState
 }
 
-private class AndroidUpdateTransport : UpdateBytesTransport, UpdateStreamTransport {
+internal class AndroidUpdateTransport : UpdateBytesTransport, UpdateStreamTransport {
     override fun get(url: URL): ByteArray = open(url).use { it.readBytes() }
 
     override fun open(url: URL): InputStream {
         require(url.protocol == "https") { "Updates must use HTTPS" }
-        val connection = (url.openConnection() as HttpURLConnection).apply {
-            connectTimeout = 10_000
-            readTimeout = 30_000
-            instanceFollowRedirects = false
-            requestMethod = "GET"
-        }
-        val code = connection.responseCode
-        if (code !in 200..299) {
-            connection.disconnect()
-            throw IOException("Update server returned HTTP $code")
-        }
-        return object : FilterInputStream(connection.inputStream) {
-            override fun close() {
-                try {
-                    super.close()
-                } finally {
-                    connection.disconnect()
+        var currentUrl = url
+        repeat(MAX_REDIRECTS + 1) { redirectCount ->
+            val connection = (currentUrl.openConnection() as HttpURLConnection).apply {
+                connectTimeout = 10_000
+                readTimeout = 30_000
+                instanceFollowRedirects = false
+                requestMethod = "GET"
+            }
+            val code = connection.responseCode
+            if (code in 200..299) {
+                return object : FilterInputStream(connection.inputStream) {
+                    override fun close() {
+                        try {
+                            super.close()
+                        } finally {
+                            connection.disconnect()
+                        }
+                    }
                 }
             }
+            val location = connection.getHeaderField("Location")
+            if (code in REDIRECT_CODES && !location.isNullOrBlank() && redirectCount < MAX_REDIRECTS) {
+                connection.disconnect()
+                val nextUrl = URL(currentUrl, location)
+                require(nextUrl.protocol == "https") { "Redirected update must use HTTPS" }
+                currentUrl = nextUrl
+            } else {
+                connection.disconnect()
+                throw IOException("Update server returned HTTP $code")
+            }
         }
+        throw IOException("Update server redirected too many times")
+    }
+
+    private companion object {
+        const val MAX_REDIRECTS = 5
+        val REDIRECT_CODES = setOf(301, 302, 303, 307, 308)
     }
 }
 

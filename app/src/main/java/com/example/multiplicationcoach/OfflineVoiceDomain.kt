@@ -20,17 +20,49 @@ object AnswerTranscriptParser {
     )
 
     fun parse(transcript: String): Int? {
-        val candidates = buildList {
-            arabicNumber.findAll(transcript).forEach { match ->
-                match.value.toIntOrNull()?.let(::add)
-            }
-            chineseNumber.findAll(transcript).forEach { match ->
-                parseChineseNumber(match.value)?.let(::add)
-            }
-        }
+        val candidates = allCandidates(transcript)
 
         if (candidates.isEmpty() || candidates.any { it !in 1..81 }) return null
         return candidates.distinct().singleOrNull()
+    }
+
+    /** Accepts a full spoken formula only when its factors match the asked problem. */
+    fun parseForProblem(a: Int, b: Int, expectedAnswer: Int, transcript: String): Int? {
+        parse(transcript)?.let { answer -> if (answer == expectedAnswer) return answer }
+
+        val arabicCandidates = arabicCandidates(transcript)
+        val chineseCandidates = chineseCandidates(transcript)
+        if (arabicCandidates.endsWithFormula(a, b, expectedAnswer) ||
+            chineseCandidates.endsWithFormula(a, b, expectedAnswer)
+        ) return expectedAnswer
+
+        val compactNumbers = transcript.filter { it.isDigit() || it in "零〇一二两三四五六七八九十" }
+            .replace('〇', '零')
+            .replace('两', '二')
+        val arabicFormula = "$a$b$expectedAnswer"
+        val chineseFormula = chineseText(a) + chineseText(b) + chineseText(expectedAnswer)
+        return if (compactNumbers == arabicFormula || compactNumbers == chineseFormula) expectedAnswer else null
+    }
+
+    private fun allCandidates(transcript: String): List<Int> = arabicCandidates(transcript) + chineseCandidates(transcript)
+
+    private fun arabicCandidates(transcript: String): List<Int> =
+        arabicNumber.findAll(transcript).mapNotNull { match -> match.value.toIntOrNull() }.toList()
+
+    private fun chineseCandidates(transcript: String): List<Int> =
+        chineseNumber.findAll(transcript).mapNotNull { match -> parseChineseNumber(match.value) }.toList()
+
+    private fun List<Int>.endsWithFormula(a: Int, b: Int, answer: Int): Boolean =
+        size >= 3 && takeLast(3) == listOf(a, b, answer)
+
+    private fun chineseText(number: Int): String {
+        require(number in 1..81)
+        val digits = "零一二三四五六七八九"
+        return when {
+            number < 10 -> digits[number].toString()
+            number < 20 -> "十" + if (number == 10) "" else digits[number % 10]
+            else -> "${digits[number / 10]}十" + if (number % 10 == 0) "" else digits[number % 10]
+        }
     }
 
     private fun parseChineseNumber(token: String): Int? {

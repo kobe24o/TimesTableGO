@@ -20,6 +20,15 @@ object LocalAnswerVerifier {
             checkedBy = checkedBy,
         )
     }
+
+    fun verify(problem: Problem, transcript: String, checkedBy: String = "local"): LocalVerification {
+        val answer = AnswerTranscriptParser.parseForProblem(problem.a, problem.b, problem.answer, transcript)
+        return LocalVerification(
+            correct = answer == problem.answer,
+            extractedAnswer = answer,
+            checkedBy = checkedBy,
+        )
+    }
 }
 
 data class FixedAudioPlayback(
@@ -140,12 +149,12 @@ object PracticeAnswerPlanner {
                 audioResourceName = PromptAudioIndex.feedbackResourceName(FixedFeedback.NoSpeech),
             )
         }
-        val verification = LocalAnswerVerifier.verify(problem.answer, transcript)
+        val verification = LocalAnswerVerifier.verify(problem, transcript)
         return PracticeAnswerPlan(
             repeatProblem = false,
             verification = verification,
             audioResourceName = if (verification.correct) {
-                PromptAudioIndex.feedbackResourceName(FixedFeedback.Correct)
+                PromptAudioIndex.correctionResourceName(problem.a, problem.b)
             } else {
                 PromptAudioIndex.correctionResourceName(problem.a, problem.b)
             },

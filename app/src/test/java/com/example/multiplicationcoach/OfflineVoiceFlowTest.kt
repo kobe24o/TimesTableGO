@@ -25,6 +25,14 @@ class OfflineVoiceFlowTest {
     }
 
     @Test
+    fun acceptsTheFactorsFollowedByTheAnswerForTheCurrentProblem() {
+        val result = PracticeAnswerPlanner.plan(Problem(2, 8), "2 8 16").verification!!
+
+        assertTrue(result.correct)
+        assertEquals(16, result.extractedAnswer)
+    }
+
+    @Test
     fun missingAudioKeepsTextualPracticeFlowUsable() {
         val playback = FixedAudioPlayback.resolve(resourceId = 0, resourceName = "prompt_3_4")
 

@@ -2,7 +2,11 @@ package com.example.multiplicationcoach.update
 
 import java.io.ByteArrayInputStream
 import java.io.File
+import java.io.InputStream
+import java.net.HttpURLConnection
 import java.net.URL
+import java.net.URLConnection
+import java.net.URLStreamHandler
 import kotlinx.coroutines.runBlocking
 import org.junit.Assert.assertArrayEquals
 import org.junit.Assert.assertEquals
@@ -66,6 +70,25 @@ class UpdateDownloadRepositoryTest {
         }
     }
 
+    @Test
+    fun followsAnHttpsRedirectBeforeReadingTheApkStream() {
+        lateinit var redirectedConnection: TestHttpURLConnection
+        val handler = object : URLStreamHandler() {
+            override fun openConnection(url: URL): URLConnection = when (url.path) {
+                "/first.apk" -> TestHttpURLConnection(url, 302, location = "final.apk")
+                    .also { redirectedConnection = it }
+                "/final.apk" -> TestHttpURLConnection(url, 200, body = "apk".byteInputStream())
+                else -> error("Unexpected URL: $url")
+            }
+        }
+        val source = URL(null, "https://updates.example.com/first.apk", handler)
+
+        val bytes = AndroidUpdateTransport().open(source).use { it.readBytes() }
+
+        assertArrayEquals("apk".toByteArray(), bytes)
+        assertTrue(redirectedConnection.disconnected)
+    }
+
     private fun assertNoStagedApk() {
         val updates = File(temporaryFolder.root, "updates")
         assertFalse(File(updates, "multiplication-coach-0.1.2-3.apk").exists())
@@ -83,4 +106,27 @@ class UpdateDownloadRepositoryTest {
         signingCertificateSha256 = UPDATE_CERTIFICATE_SHA256,
         urls = listOf(URL("https://updates.example.com/multiplication-coach-0.1.2-3.apk")),
     )
+
+    private class TestHttpURLConnection(
+        url: URL,
+        private val status: Int,
+        private val body: InputStream = ByteArrayInputStream(ByteArray(0)),
+        private val location: String? = null,
+    ) : HttpURLConnection(url) {
+        var disconnected = false
+
+        override fun connect() = Unit
+
+        override fun disconnect() {
+            disconnected = true
+        }
+
+        override fun usingProxy(): Boolean = false
+
+        override fun getResponseCode(): Int = status
+
+        override fun getHeaderField(name: String): String? = if (name.equals("Location", ignoreCase = true)) location else null
+
+        override fun getInputStream(): InputStream = body
+    }
 }
