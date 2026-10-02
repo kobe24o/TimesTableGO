@@ -7,6 +7,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import types
 from pathlib import Path
 
 import imageio_ffmpeg
@@ -33,6 +34,22 @@ def read_lines(path: Path) -> list[tuple[str, str]]:
     return entries
 
 
+def correction_entries() -> list[tuple[str, str]]:
+    numerals = {
+        1: "一", 2: "二", 3: "三", 4: "四", 5: "五", 6: "六", 7: "七", 8: "八", 9: "九",
+        10: "十", 12: "十二", 14: "十四", 15: "十五", 16: "十六", 18: "十八", 20: "二十",
+        21: "二十一", 24: "二十四", 25: "二十五", 27: "二十七", 28: "二十八", 30: "三十",
+        32: "三十二", 35: "三十五", 36: "三十六", 40: "四十", 42: "四十二", 45: "四十五",
+        48: "四十八", 49: "四十九", 54: "五十四", 56: "五十六", 60: "六十", 63: "六十三",
+        64: "六十四", 70: "七十", 72: "七十二", 80: "八十", 81: "八十一",
+    }
+    return [
+        (f"correction_{a}_{b}", f"{numerals[a]}乘{numerals[b]}等于{numerals[a * b]}。")
+        for a in range(1, 10)
+        for b in range(1, 10)
+    ]
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--cosyvoice-dir", type=Path, required=True)
@@ -46,6 +63,13 @@ def main() -> None:
         raise FileNotFoundError(f"CosyVoice model is incomplete: {args.model_dir}")
     sys.path.insert(0, str(args.cosyvoice_dir))
     sys.path.insert(0, str(args.cosyvoice_dir / "third_party" / "Matcha-TTS"))
+    # CosyVoice's model YAML imports the training-only pitch extractor even though
+    # this fixed-voice inference path never calls it.  pyworld has no CPython 3.13
+    # Windows wheel, so provide an import placeholder when it is absent.
+    try:
+        import pyworld  # pylint: disable=import-outside-toplevel,unused-import
+    except ImportError:
+        sys.modules["pyworld"] = types.ModuleType("pyworld")
     from cosyvoice.cli.cosyvoice import AutoModel  # pylint: disable=import-outside-toplevel
 
     # The project voice files are generated once; CPU avoids differences from a local GPU.
@@ -54,7 +78,9 @@ def main() -> None:
     if args.speaker not in model.list_available_spks():
         raise ValueError(f"Speaker {args.speaker!r} is unavailable: {model.list_available_spks()}")
 
-    entries = read_lines(args.lines)
+    entries = read_lines(args.lines) + correction_entries()
+    if len(entries) != 166:
+        raise ValueError(f"Expected 166 fixed voice lines, got {len(entries)}")
     args.output_dir.mkdir(parents=True, exist_ok=True)
     ffmpeg = imageio_ffmpeg.get_ffmpeg_exe()
     temporary_dir = Path(tempfile.mkdtemp(prefix="cosyvoice-fixed-audio-"))

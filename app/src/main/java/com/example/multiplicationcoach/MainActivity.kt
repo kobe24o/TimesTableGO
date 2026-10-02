@@ -199,9 +199,18 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
                 delay(1000)
             }
         }
-        val transcript = localAsr(seconds)
+        val recognition = localAsr(seconds)
         timer.cancel()
         if (stopped) return
+        val transcript = recognition.getOrElse { error ->
+            _state.value = _state.value.copy(
+                phase = "录音失败",
+                countdown = 0,
+                transcript = "",
+                feedback = "麦克风录音失败：" + error.message.orEmpty(),
+            )
+            return
+        }
         val result = LocalAnswerVerifier.verify(problem.answer, transcript)
         val message = if (result.correct) {
             "答对了：" + problem.label + " = " + problem.answer
@@ -215,19 +224,19 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
             feedback = message,
         )
         if (_state.value.settings.promptAudioEnabled) {
-            player.playFeedback(if (result.correct) FixedFeedback.Correct else FixedFeedback.Incorrect)
+            if (result.correct) player.playFeedback(FixedFeedback.Correct) else player.playCorrection(problem)
         }
         save(problem, transcript, result.extractedAnswer, result.correct, result.checkedBy, message)
     }
 
-    private suspend fun localAsr(seconds: Int): String {
+    private suspend fun localAsr(seconds: Int): Result<String> {
         _state.value = _state.value.copy(transcript = "正在本地录音…")
-        val pcm = withContext(Dispatchers.IO) { PcmRecorder.recordSeconds(seconds) }
-        if (stopped) return ""
+        val pcm = runCatching { withContext(Dispatchers.IO) { PcmRecorder.recordSeconds(seconds) } }
+            .getOrElse { return Result.failure(it) }
+        if (stopped) return Result.success("")
         _state.value = _state.value.copy(transcript = "正在本地识别…")
-        return localAsr.transcribe(pcm).getOrElse { error ->
+        return localAsr.transcribe(pcm).onFailure { error ->
             _state.value = _state.value.copy(feedback = "离线识别失败：" + error.message.orEmpty())
-            ""
         }
     }
 
@@ -257,14 +266,20 @@ object PcmRecorder {
         val output = ByteArray(seconds.coerceIn(1, 15) * sampleRate * 2)
         val recorder = AudioRecord(MediaRecorder.AudioSource.VOICE_RECOGNITION, sampleRate, AudioFormat.CHANNEL_IN_MONO, AudioFormat.ENCODING_PCM_16BIT, bufferSize)
         try {
+            check(recorder.state == AudioRecord.STATE_INITIALIZED) { "麦克风录音不可用" }
             recorder.startRecording()
             var offset = 0
             while (offset < output.size) {
-                val read = recorder.read(output, offset, minOf(bufferSize, output.size - offset))
-                if (read <= 0) break
+                val read = recorder.read(
+                    output,
+                    offset,
+                    minOf(bufferSize, output.size - offset),
+                    AudioRecord.READ_BLOCKING,
+                )
+                check(read > 0) { "麦克风录音中断：$read" }
                 offset += read
             }
-            return output.copyOf(offset)
+            return output
         } finally {
             runCatching { recorder.stop() }
             recorder.release()

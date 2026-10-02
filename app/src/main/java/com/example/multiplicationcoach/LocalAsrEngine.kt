@@ -66,7 +66,7 @@ class LocalAsrEngine {
                 currentVad.acceptWaveform(samples)
                 currentVad.flush()
 
-                buildList {
+                val vadTranscript = buildList {
                     while (!currentVad.empty()) {
                         val segment = currentVad.front()
                         currentVad.pop()
@@ -81,6 +81,12 @@ class LocalAsrEngine {
                         }
                     }
                 }.joinToString(separator = "")
+                val fullRecordingTranscript = if (vadTranscript.isBlank()) {
+                    currentRecognizer.decodeWholeRecording(samples)
+                } else {
+                    ""
+                }
+                LocalAsrTranscriptFallback.choose(vadTranscript, fullRecordingTranscript)
             }
         }
     }
@@ -99,7 +105,24 @@ class LocalAsrEngine {
         sample / 32768f
     }
 
+    private fun OfflineRecognizer.decodeWholeRecording(samples: FloatArray): String {
+        val stream = createStream()
+        try {
+            stream.acceptWaveform(samples, PCM_SAMPLE_RATE)
+            decode(stream)
+            return getResult(stream).text.trim()
+        } finally {
+            stream.release()
+        }
+    }
+
     private companion object {
         const val PCM_SAMPLE_RATE = 16_000
     }
+}
+
+/** Keeps short valid answers recognisable when voice activity detection yields no segment. */
+object LocalAsrTranscriptFallback {
+    fun choose(vadTranscript: String, fullRecordingTranscript: String): String =
+        vadTranscript.ifBlank { fullRecordingTranscript }
 }

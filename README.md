@@ -27,7 +27,7 @@ APK 位于 app/build/outputs/apk/release。正式发布请在 CI 配置稳定的
 
 CosyVoice 权重只用于开发期音频生成，不能放入 APK。准备好本地 CosyVoice 源码、Python 环境和 CosyVoice-300M-SFT 模型后，运行 tools/generate_fixed_voice_audio.ps1，并提供 Python、CosyVoiceDir、ModelDir 和 Speaker 参数。
 
-语料清单在 tools/fixed_voice_lines.txt；脚本会拒绝不完整或非 85 个资源的输出。
+语料清单在 tools/fixed_voice_lines.txt；脚本会输出 81 条读题音频、4 条通用反馈和 81 条逐题订正音频，共 166 个资源，并拒绝不完整输出。
 
 ## 许可
 

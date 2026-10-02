@@ -15,5 +15,5 @@ $output = Join-Path $root "app\src\main\res\raw"
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 $generated = @(Get-ChildItem $output -Filter "*.ogg")
-if ($generated.Count -ne 85) { throw "Expected 85 Ogg files, got $($generated.Count)" }
+if ($generated.Count -ne 166) { throw "Expected 166 Ogg files, got $($generated.Count)" }
 Write-Host "Generated and verified $($generated.Count) fixed voice files."

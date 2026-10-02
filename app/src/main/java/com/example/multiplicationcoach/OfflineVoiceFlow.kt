@@ -55,6 +55,9 @@ class FixedAudioPlayer(private val context: Context) {
     fun playFeedback(feedback: FixedFeedback): FixedAudioPlayback =
         play(PromptAudioIndex.feedbackResourceName(feedback))
 
+    fun playCorrection(problem: Problem): FixedAudioPlayback =
+        play(PromptAudioIndex.correctionResourceName(problem.a, problem.b))
+
     fun stop() {
         current?.runCatching { stop() }
         current?.release()

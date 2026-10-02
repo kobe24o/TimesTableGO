@@ -80,7 +80,7 @@ prompt_9_6	九乘以六等于多少？
 prompt_9_7	九乘以七等于多少？
 prompt_9_8	九乘以八等于多少？
 prompt_9_9	九乘以九等于多少？
-feedback_correct	回答正确！
+feedback_correct	答对了！
 feedback_incorrect	再想一想。
 feedback_listen	请仔细听题。
 feedback_no_speech	没有听清楚，请再说一遍。

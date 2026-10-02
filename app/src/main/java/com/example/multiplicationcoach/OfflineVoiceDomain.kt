@@ -75,4 +75,9 @@ object PromptAudioIndex {
         FixedFeedback.Listen -> "feedback_listen"
         FixedFeedback.NoSpeech -> "feedback_no_speech"
     }
+
+    fun correctionResourceName(a: Int, b: Int): String {
+        require(a in 1..9 && b in 1..9) { "Multiplication operands must be in 1..9" }
+        return "correction_${a}_${b}"
+    }
 }

@@ -16,6 +16,11 @@ class PromptAudioIndexTest {
     }
 
     @Test
+    fun mapsAnIncorrectAnswerToItsPackagedCorrectionAudio() {
+        assertEquals("correction_3_4", PromptAudioIndex.correctionResourceName(3, 4))
+    }
+
+    @Test
     fun mapsAllFixedFeedbackToRawResourceNames() {
         assertEquals("feedback_incorrect", PromptAudioIndex.feedbackResourceName(FixedFeedback.Incorrect))
         assertEquals("feedback_listen", PromptAudioIndex.feedbackResourceName(FixedFeedback.Listen))
