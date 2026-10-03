@@ -39,4 +39,28 @@ class LocalAsrFallbackTest {
             ),
         )
     }
+
+    @Test
+    fun prefersTheFullRecordingWhenItContainsTheExpectedAnswerAlongsideFactors() {
+        assertEquals(
+            "八乘九等于七十二",
+            LocalAsrTranscriptFallback.choose(
+                vadTranscript = "八乘九等于七十一",
+                fullRecordingTranscript = "八乘九等于七十二",
+                expectedAnswer = 72,
+            ),
+        )
+    }
+
+    @Test
+    fun returnsNoAnswerWhenBothPassesOnlyRecognizePunctuation() {
+        assertEquals(
+            "",
+            LocalAsrTranscriptFallback.choose(
+                vadTranscript = "。",
+                fullRecordingTranscript = "，",
+                expectedAnswer = 72,
+            ),
+        )
+    }
 }

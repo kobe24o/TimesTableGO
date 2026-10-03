@@ -132,14 +132,12 @@ object LocalAsrTranscriptFallback {
         fullRecordingTranscript: String,
         expectedAnswer: Int? = null,
     ): String {
-        val vadAnswer = AnswerTranscriptParser.parse(vadTranscript)
-        val fullAnswer = AnswerTranscriptParser.parse(fullRecordingTranscript)
         return when {
-            expectedAnswer != null && vadAnswer == expectedAnswer -> vadTranscript
-            expectedAnswer != null && fullAnswer == expectedAnswer -> fullRecordingTranscript
-            vadAnswer != null -> vadTranscript
-            fullAnswer != null -> fullRecordingTranscript
-            else -> vadTranscript.ifBlank { fullRecordingTranscript }
+            expectedAnswer != null && AnswerTranscriptParser.containsAnswer(vadTranscript, expectedAnswer) -> vadTranscript
+            expectedAnswer != null && AnswerTranscriptParser.containsAnswer(fullRecordingTranscript, expectedAnswer) -> fullRecordingTranscript
+            AnswerTranscriptParser.containsNumber(vadTranscript) -> vadTranscript
+            AnswerTranscriptParser.containsNumber(fullRecordingTranscript) -> fullRecordingTranscript
+            else -> ""
         }
     }
 }

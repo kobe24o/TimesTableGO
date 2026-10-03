@@ -16,6 +16,14 @@ class PracticeAnswerPlannerTest {
     }
 
     @Test
+    fun punctuationOnlyTranscriptRepeatsTheSameProblemInsteadOfScoringItWrong() {
+        val plan = PracticeAnswerPlanner.plan(Problem(8, 9), "。")
+
+        assertTrue(plan.repeatProblem)
+        assertEquals("feedback_no_speech", plan.audioResourceName)
+    }
+
+    @Test
     fun correctAnswerUsesTheShortCorrectCueAndWaitsForIt() {
         val plan = PracticeAnswerPlanner.plan(Problem(3, 4), "十二")
 

@@ -142,7 +142,7 @@ data class PracticeAnswerPlan(
 
 object PracticeAnswerPlanner {
     fun plan(problem: Problem, transcript: String): PracticeAnswerPlan {
-        if (transcript.isBlank()) {
+        if (transcript.isBlank() || !AnswerTranscriptParser.containsNumber(transcript)) {
             return PracticeAnswerPlan(
                 repeatProblem = true,
                 verification = null,

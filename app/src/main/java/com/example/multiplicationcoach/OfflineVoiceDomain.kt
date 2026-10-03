@@ -26,9 +26,13 @@ object AnswerTranscriptParser {
         return candidates.distinct().singleOrNull()
     }
 
+    fun containsNumber(transcript: String): Boolean = allCandidates(transcript).any { it in 1..81 }
+
+    fun containsAnswer(transcript: String, answer: Int): Boolean = allCandidates(transcript).any { it == answer }
+
     /** Accepts a full spoken formula only when its factors match the asked problem. */
     fun parseForProblem(a: Int, b: Int, expectedAnswer: Int, transcript: String): Int? {
-        if (allCandidates(transcript).any { it == expectedAnswer }) return expectedAnswer
+        if (containsAnswer(transcript, expectedAnswer)) return expectedAnswer
 
         parse(transcript)?.let { answer -> if (answer == expectedAnswer) return answer }
 
