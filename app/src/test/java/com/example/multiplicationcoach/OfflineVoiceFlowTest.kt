@@ -33,6 +33,14 @@ class OfflineVoiceFlowTest {
     }
 
     @Test
+    fun acceptsAnAnswerWhenTheTranscriptAlsoContainsOtherNumbers() {
+        val result = PracticeAnswerPlanner.plan(Problem(3, 4), "我觉得十一，但是答案十二").verification!!
+
+        assertTrue(result.correct)
+        assertEquals(12, result.extractedAnswer)
+    }
+
+    @Test
     fun missingAudioKeepsTextualPracticeFlowUsable() {
         val playback = FixedAudioPlayback.resolve(resourceId = 0, resourceName = "prompt_3_4")
 

@@ -94,6 +94,7 @@ data class AppSettings(
 data class UiState(
     val running: Boolean = false,
     val problem: Problem? = null,
+    val revealedAnswer: Int? = null,
     val phase: String = "准备开始",
     val countdown: Int = 0,
     val transcript: String = "",
@@ -104,6 +105,10 @@ data class UiState(
     val localAsrReady: Boolean = false,
     val localAsrReason: String? = "正在检查离线识别资源…",
 )
+
+fun UiState.questionText(): String = problem?.let { problem ->
+    "${problem.a} × ${problem.b} = ${revealedAnswer ?: "?"}"
+} ?: "准备好了吗？"
 
 class PracticeViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = PracticePrefs(application)
@@ -181,7 +186,7 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
     private suspend fun askOneProblem(problem: Problem): Boolean {
         val seconds = _state.value.settings.answerTimeLimitSeconds
         _state.value = _state.value.copy(
-            problem = problem, phase = "读题", transcript = "", countdown = seconds,
+            problem = problem, revealedAnswer = null, phase = "读题", transcript = "", countdown = seconds,
             feedback = problem.label + " = ?",
         )
         if (!_state.value.hasAudioPermission) {
@@ -239,13 +244,14 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         }
         val result = checkNotNull(plan.verification)
         val message = if (result.correct) {
-            "答对了：" + problem.label + " = " + problem.answer
+            "答对了"
         } else {
             "答错了，正确答案：" + problem.answer
         }
         _state.value = _state.value.copy(
             phase = if (result.correct) "答对" else "订正",
             countdown = 0,
+            revealedAnswer = problem.answer,
             transcript = transcript.ifBlank { "未识别到语音" },
             feedback = message,
         )
@@ -418,7 +424,7 @@ fun PracticeScreen(state: UiState, start: () -> Unit, stop: () -> Unit, clear: (
         Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White)) {
             Column(Modifier.padding(22.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
                 Text(state.phase)
-                Text(state.problem?.let { it.a.toString() + " × " + it.b + " = ?" } ?: "准备好了吗？", fontSize = 40.sp, fontWeight = FontWeight.Bold)
+                Text(state.questionText(), fontSize = 40.sp, fontWeight = FontWeight.Bold)
                 if (state.countdown > 0) Text(state.countdown.toString() + " 秒")
                 Text(state.feedback, textAlign = TextAlign.Center)
                 if (state.transcript.isNotBlank()) Text("识别：" + state.transcript, color = Color.Gray)

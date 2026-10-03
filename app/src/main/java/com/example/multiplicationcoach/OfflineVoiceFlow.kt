@@ -154,7 +154,7 @@ object PracticeAnswerPlanner {
             repeatProblem = false,
             verification = verification,
             audioResourceName = if (verification.correct) {
-                PromptAudioIndex.correctionResourceName(problem.a, problem.b)
+                PromptAudioIndex.feedbackResourceName(FixedFeedback.Correct)
             } else {
                 PromptAudioIndex.correctionResourceName(problem.a, problem.b)
             },

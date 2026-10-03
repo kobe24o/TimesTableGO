@@ -28,6 +28,8 @@ object AnswerTranscriptParser {
 
     /** Accepts a full spoken formula only when its factors match the asked problem. */
     fun parseForProblem(a: Int, b: Int, expectedAnswer: Int, transcript: String): Int? {
+        if (allCandidates(transcript).any { it == expectedAnswer }) return expectedAnswer
+
         parse(transcript)?.let { answer -> if (answer == expectedAnswer) return answer }
 
         val arabicCandidates = arabicCandidates(transcript)

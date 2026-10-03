@@ -16,12 +16,12 @@ class PracticeAnswerPlannerTest {
     }
 
     @Test
-    fun correctAnswerRepeatsTheWholeFormulaAndWaitsForIt() {
+    fun correctAnswerUsesTheShortCorrectCueAndWaitsForIt() {
         val plan = PracticeAnswerPlanner.plan(Problem(3, 4), "十二")
 
         assertFalse(plan.repeatProblem)
         assertTrue(plan.verification!!.correct)
-        assertEquals("correction_3_4", plan.audioResourceName)
+        assertEquals("feedback_correct", plan.audioResourceName)
         assertTrue(plan.waitForAudioCompletion)
     }
 
@@ -33,5 +33,12 @@ class PracticeAnswerPlannerTest {
         assertFalse(plan.verification!!.correct)
         assertEquals("correction_3_4", plan.audioResourceName)
         assertTrue(plan.waitForAudioCompletion)
+    }
+
+    @Test
+    fun questionShowsTheCorrectNumberAfterTheAnswerIsChecked() {
+        val state = UiState(problem = Problem(3, 7), revealedAnswer = 21)
+
+        assertEquals("3 × 7 = 21", state.questionText())
     }
 }
