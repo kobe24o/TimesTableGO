@@ -1,9 +1,20 @@
 package com.example.multiplicationcoach
 
+/** Derives answer time remaining from the instant microphone capture really began. */
+object AnswerWindowClock {
+    fun remainingSeconds(totalSeconds: Int, recordingStartedAtMs: Long, nowMs: Long): Int {
+        require(totalSeconds in 1..15)
+        val remainingMs = (recordingStartedAtMs + totalSeconds * 1_000L - nowMs)
+            .coerceIn(0L, totalSeconds * 1_000L)
+        return if (remainingMs == 0L) 0 else ((remainingMs + 999L) / 1_000L).toInt()
+    }
+}
+
 /** Converts a final ASR transcript into one unambiguous multiplication answer. */
 object AnswerTranscriptParser {
     private val arabicNumber = Regex("\\d+")
     private val chineseNumber = Regex("[零〇一二两三四五六七八九十百千万]+")
+    private val mixedArabicChineseTensNumber = Regex("[0-9]十[零〇一二两三四五六七八九]?")
     private val chineseDigits = mapOf(
         '零' to 0,
         '〇' to 0,
@@ -50,13 +61,21 @@ object AnswerTranscriptParser {
         return if (compactNumbers == arabicFormula || compactNumbers == chineseFormula) expectedAnswer else null
     }
 
-    private fun allCandidates(transcript: String): List<Int> = arabicCandidates(transcript) + chineseCandidates(transcript)
+    private fun allCandidates(transcript: String): List<Int> =
+        arabicCandidates(transcript) + chineseCandidates(transcript) + mixedArabicChineseTensCandidates(transcript)
 
     private fun arabicCandidates(transcript: String): List<Int> =
         arabicNumber.findAll(transcript).mapNotNull { match -> match.value.toIntOrNull() }.toList()
 
     private fun chineseCandidates(transcript: String): List<Int> =
         chineseNumber.findAll(transcript).mapNotNull { match -> parseChineseNumber(match.value) }.toList()
+
+    private fun mixedArabicChineseTensCandidates(transcript: String): List<Int> =
+        mixedArabicChineseTensNumber.findAll(transcript).map { match ->
+            val tens = match.value.first().digitToInt()
+            val units = match.value.last().takeIf { it != '十' }?.let { chineseDigits[it] } ?: 0
+            tens * 10 + units
+        }.toList()
 
     private fun List<Int>.endsWithFormula(a: Int, b: Int, answer: Int): Boolean =
         size >= 3 && takeLast(3) == listOf(a, b, answer)

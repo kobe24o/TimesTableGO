@@ -7,6 +7,13 @@ import org.junit.Test
 
 class PracticeAnswerPlannerTest {
     @Test
+    fun answerCountdownUsesTheActualRecordingStartTime() {
+        assertEquals(3, AnswerWindowClock.remainingSeconds(3, recordingStartedAtMs = 1_000, nowMs = 1_000))
+        assertEquals(3, AnswerWindowClock.remainingSeconds(3, recordingStartedAtMs = 1_000, nowMs = 1_999))
+        assertEquals(2, AnswerWindowClock.remainingSeconds(3, recordingStartedAtMs = 1_000, nowMs = 2_000))
+    }
+
+    @Test
     fun blankTranscriptRepeatsTheSameProblemInsteadOfScoringItWrong() {
         val plan = PracticeAnswerPlanner.plan(Problem(3, 4), "")
 
@@ -21,6 +28,15 @@ class PracticeAnswerPlannerTest {
 
         assertTrue(plan.repeatProblem)
         assertEquals("feedback_no_speech", plan.audioResourceName)
+    }
+
+    @Test
+    fun mixedArabicAndChineseFortyIsAcceptedAsTheSpokenCorrectAnswer() {
+        val plan = PracticeAnswerPlanner.plan(Problem(5, 8), "5 8 4十")
+
+        assertFalse(plan.repeatProblem)
+        assertTrue(plan.verification!!.correct)
+        assertEquals(40, plan.verification!!.extractedAnswer)
     }
 
     @Test

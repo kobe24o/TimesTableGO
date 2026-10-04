@@ -8,6 +8,7 @@ import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Bundle
+import android.os.SystemClock
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
@@ -54,6 +55,8 @@ import com.example.multiplicationcoach.update.AppUpdateUiState
 import com.example.multiplicationcoach.update.UpdateViewModel
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -211,14 +214,7 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
                 }
             }
         _state.value = _state.value.copy(phase = "请作答", feedback = "请在 " + seconds + " 秒内说出答案。")
-        val timer = viewModelScope.launch {
-            for (second in seconds downTo 1) {
-                _state.value = _state.value.copy(countdown = second)
-                delay(1000)
-            }
-        }
         val recognition = localAsr(seconds, recorder, problem.answer)
-        timer.cancel()
         if (stopped) return false
         val transcript = recognition.getOrElse { error ->
             _state.value = _state.value.copy(
@@ -269,13 +265,41 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         seconds: Int,
         recorder: PcmRecorder.PreparedRecorder,
         expectedAnswer: Int,
-    ): Result<String> {
+    ): Result<String> = coroutineScope {
         _state.value = _state.value.copy(transcript = "正在本地录音…")
-        val pcm = runCatching { withContext(Dispatchers.IO) { recorder.recordSeconds(seconds) } }
-            .getOrElse { return Result.failure(it) }
-        if (stopped) return Result.success("")
+        val recordingStartedAt = kotlinx.coroutines.CompletableDeferred<Long>()
+        val capture = async(Dispatchers.IO) {
+            recorder.recordSeconds(seconds) {
+                recordingStartedAt.complete(SystemClock.elapsedRealtime())
+            }
+        }
+        val countdown = try {
+            val startedAt = recordingStartedAt.await()
+            launch {
+                while (true) {
+                    val remaining = AnswerWindowClock.remainingSeconds(
+                        totalSeconds = seconds,
+                        recordingStartedAtMs = startedAt,
+                        nowMs = SystemClock.elapsedRealtime(),
+                    )
+                    _state.value = _state.value.copy(countdown = remaining)
+                    if (remaining == 0) break
+                    delay(100)
+                }
+            }
+        } catch (error: Throwable) {
+            return@coroutineScope Result.failure(error)
+        }
+        val pcm = try {
+            capture.await()
+        } catch (error: Throwable) {
+            countdown.cancel()
+            return@coroutineScope Result.failure(error)
+        }
+        countdown.cancel()
+        if (stopped) return@coroutineScope Result.success("")
         _state.value = _state.value.copy(transcript = "正在本地识别…")
-        return localAsr.transcribe(pcm, expectedAnswer).onFailure { error ->
+        localAsr.transcribe(pcm, expectedAnswer).onFailure { error ->
             _state.value = _state.value.copy(feedback = "离线识别失败：" + error.message.orEmpty())
         }
     }
@@ -305,11 +329,12 @@ object PcmRecorder {
     ) {
         private var released = false
 
-        fun recordSeconds(seconds: Int): ByteArray {
+        fun recordSeconds(seconds: Int, onRecordingStarted: () -> Unit): ByteArray {
             check(!released) { "麦克风录音器已释放" }
             val output = ByteArray(seconds.coerceIn(1, 15) * PCM_SAMPLE_RATE * 2)
             try {
                 recorder.startRecording()
+                onRecordingStarted()
                 var offset = 0
                 while (offset < output.size) {
                     val read = recorder.read(
