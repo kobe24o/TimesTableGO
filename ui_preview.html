@@ -1,105 +1,161 @@
 <!DOCTYPE html>
 <html lang="zh-CN">
 <head>
-<meta charset="UTF-8" />
-<meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>TimesTableGO — UI 预览（重构后新版）</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>TimesTableGO · UI 预览（三页 + 统计）</title>
 <style>
   :root{
-    --green:#246B45; --blue:#2F6F8F; --red:#B23A48;
-    --bg:#F7F7F2; --surface:#FFFFFF; --surface-variant:#EDF1EC;
-    --on-surface:#182027; --on-surface-var:#59636E; --primary-container:#D8EADD;
-    --radius:20px; --radius-sm:12px; --radius-pill:999px;
+    --primary:#246B45; --secondary:#2F6F8F; --error:#B23A48;
+    --bg:#F7F7F2; --surface:#FFFFFF; --surfaceVariant:#EDF1EC;
+    --primaryContainer:#D8EADD; --onPrimaryContainer:#0C3320;
+    --onSurface:#182027; --onSurfaceVariant:#59636E; --outline:#D5DAD4;
   }
   *{box-sizing:border-box;font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;}
-  body{margin:0;background:#e9ece7;color:var(--on-surface);padding:32px 16px;display:flex;flex-wrap:wrap;gap:32px;justify-content:center;}
-  h1{width:100%;text-align:center;font-size:20px;color:#3a3f3a;margin:0 0 8px;}
-  .sub{width:100%;text-align:center;color:#6c6f75;font-size:13px;margin:0 0 16px;}
-  .phone{width:330px;background:var(--bg);border-radius:34px;box-shadow:0 18px 50px rgba(0,0,0,.18);overflow:hidden;border:8px solid #111;}
-  .appbar{display:flex;align-items:center;gap:12px;background:var(--surface);padding:14px 18px;box-shadow:0 1px 0 rgba(0,0,0,.05);}
-  .mic{width:34px;height:34px;border-radius:50%;background:var(--green);display:flex;align-items:center;justify-content:center;color:#fff;font-size:18px;}
-  .appbar .title{font-weight:700;font-size:16px;}
-  .body{padding:20px;display:flex;flex-direction:column;gap:18px;}
-  .grad-card{background:linear-gradient(160deg,var(--green),var(--blue));border-radius:var(--radius);padding:24px;display:flex;flex-direction:column;align-items:center;gap:14px;color:#fff;box-shadow:0 8px 22px rgba(36,107,69,.25);}
-  .pill{background:rgba(255,255,255,.18);padding:6px 14px;border-radius:var(--radius-pill);font-size:14px;}
-  .q{font-size:46px;font-weight:800;line-height:1;}
-  .ring{width:74px;height:74px;border-radius:50%;border:6px solid rgba(255,255,255,.25);display:flex;align-items:center;justify-content:center;font-size:22px;font-weight:700;position:relative;}
-  .ring::before{content:"";position:absolute;inset:-6px;border-radius:50%;border:6px solid transparent;border-top-color:#fff;transform:rotate(36deg);}
-  .feedback{text-align:center;opacity:.92;font-size:14px;}
-  .row{display:flex;gap:12px;justify-content:center;}
-  .btn{border:none;border-radius:var(--radius-pill);padding:12px 22px;font-size:14px;font-weight:600;display:flex;align-items:center;gap:6px;cursor:pointer;color:#fff;}
-  .btn.green{background:var(--green);}
-  .btn.red{background:var(--red);}
-  .btn.outline{background:#fff;border:1.5px solid var(--green);color:var(--green);}
-  .chip{background:var(--surface-variant);color:var(--on-surface-var);padding:12px;border-radius:var(--radius-sm);text-align:center;font-size:14px;}
-  .card{background:var(--surface-variant);border-radius:16px;padding:16px;}
-  .card .head{font-weight:700;margin-bottom:4px;}
-  .card .desc{font-size:13px;color:var(--on-surface-var);}
-  .switch{width:46px;height:26px;border-radius:999px;background:var(--green);position:relative;}
-  .switch::after{content:"";position:absolute;right:3px;top:3px;width:20px;height:20px;border-radius:50%;background:#fff;}
-  .header-card{background:var(--primary-container);border-radius:16px;padding:18px;display:flex;flex-direction:column;gap:4px;}
-  .header-card .h{font-size:22px;font-weight:800;color:#0C3320;}
-  .header-card .d{font-size:13px;color:#0C3320;opacity:.8;}
-  .field{background:var(--surface-variant);border-radius:16px;padding:14px;}
-  .field label{display:block;font-size:13px;color:var(--on-surface-var);margin-bottom:8px;}
-  .field input{border:1.5px solid #d5dad4;border-radius:10px;padding:10px 12px;width:100%;font-size:15px;background:#fff;}
-  .label{font-weight:700;font-size:15px;margin-top:4px;}
-  .ver{font-size:13px;color:var(--on-surface-var);}
+  body{margin:0;background:#EAEBE6;padding:32px;display:flex;flex-direction:column;align-items:center;gap:24px;}
+  h1{font-size:20px;color:#182027;margin:0;}
+  .hint{color:#59636E;font-size:13px;max-width:880px;text-align:center;line-height:1.6;}
+  .row{display:flex;gap:24px;flex-wrap:wrap;justify-content:center;}
+  .phone{width:300px;background:var(--bg);border-radius:36px;box-shadow:0 18px 40px rgba(0,0,0,.18);overflow:hidden;border:8px solid #1c1f23;}
+  .topbar{display:flex;align-items:center;gap:10px;padding:14px 16px;background:var(--surface);}
+  .badge{width:30px;height:30px;border-radius:50%;background:var(--primary);display:flex;align-items:center;justify-content:center;color:#fff;font-size:14px;}
+  .topbar .t{font-weight:700;font-size:15px;color:var(--onSurface);}
+  .content{padding:16px;display:flex;flex-direction:column;gap:14px;min-height:560px;}
+  .card{background:var(--surface);border-radius:16px;padding:16px;box-shadow:0 2px 6px rgba(0,0,0,.05);}
+  .pill{display:inline-block;background:rgba(255,255,255,.18);color:#fff;border-radius:999px;padding:3px 12px;font-size:12px;}
+  .gcard{background:linear-gradient(160deg,var(--primary),var(--secondary));border-radius:20px;padding:22px;color:#fff;text-align:center;display:flex;flex-direction:column;align-items:center;gap:12px;}
+  .gcard .q{font-size:34px;font-weight:800;}
+  .gcard .fb{font-size:13px;opacity:.9;}
+  .ring{width:60px;height:60px;border-radius:50%;border:6px solid rgba(255,255,255,.28);border-top-color:#fff;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:18px;}
+  .btns{display:flex;gap:8px;justify-content:center;}
+  .btn{flex:1;border:none;border-radius:999px;padding:10px;font-weight:700;color:#fff;font-size:13px;display:flex;align-items:center;justify-content:center;gap:4px;}
+  .btn.g{background:var(--primary);} .btn.r{background:var(--error);} .btn.o{background:transparent;color:var(--onSurface);border:1px solid var(--outline);}
+  .metrics{display:grid;grid-template-columns:1fr 1fr;gap:10px;}
+  .metric{background:var(--surfaceVariant);border-radius:16px;padding:14px;}
+  .metric .l{font-size:12px;color:var(--onSurfaceVariant);}
+  .metric .v{font-size:24px;font-weight:800;color:var(--onSurface);}
+  .metric .s{font-size:11px;color:var(--onSurfaceVariant);}
+  .sec{font-weight:800;font-size:15px;color:var(--onSurface);margin-top:4px;}
+  .chart{width:100%;height:150px;}
+  .badges{display:flex;gap:10px;overflow:hidden;}
+  .badge-item{width:84px;display:flex;flex-direction:column;align-items:center;gap:6px;}
+  .circle{width:52px;height:52px;border-radius:50%;background:var(--primaryContainer);display:flex;align-items:center;justify-content:center;color:var(--primary);font-size:22px;font-weight:900;}
+  .circle.off{background:var(--surfaceVariant);color:var(--onSurfaceVariant);}
+  .badge-item .bt{font-size:11px;font-weight:700;text-align:center;color:var(--onSurface);}
+  .badge-item .bs{font-size:9px;text-align:center;color:var(--onSurfaceVariant);line-height:1.1;}
+  .matrix{display:grid;grid-template-columns:18px repeat(9,1fr);gap:4px;}
+  .matrix .h{font-size:10px;color:var(--onSurfaceVariant);text-align:center;}
+  .cell{aspect-ratio:1;border-radius:6px;display:flex;align-items:center;justify-content:center;color:#fff;font-size:10px;font-weight:700;}
+  .legend{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--onSurfaceVariant);margin-top:6px;}
+  .legend span{display:flex;align-items:center;gap:4px;}
+  .dot{width:11px;height:11px;border-radius:3px;display:inline-block;}
+  .attempt{background:var(--surface);border-radius:12px;padding:10px 12px;display:flex;justify-content:space-between;align-items:center;box-shadow:0 1px 3px rgba(0,0,0,.04);}
+  .attempt .l{font-weight:600;font-size:13px;}
+  .attempt .sub{font-size:11px;color:var(--onSurfaceVariant);}
+  .tag{border-radius:999px;padding:3px 10px;font-size:11px;font-weight:700;}
+  .tag.ok{background:var(--primaryContainer);color:var(--onPrimaryContainer);}
+  .tag.no{background:#FBE3E1;color:var(--error);}
+  .nav{display:flex;background:var(--surface);border-top:1px solid var(--outline);}
+  .nav div{flex:1;text-align:center;padding:10px 0;font-size:12px;color:var(--onSurfaceVariant);}
+  .nav div.on{color:var(--primary);font-weight:700;}
+  .empty{background:var(--surfaceVariant);border-radius:16px;padding:28px;text-align:center;color:var(--onSurfaceVariant);font-size:13px;}
 </style>
 </head>
 <body>
-  <h1>TimesTableGO · 乘法口诀背诵 — UI 预览</h1>
-  <p class="sub">重构后新版（练习 + 设置两页）· 设计语言：绿色品牌色 / 渐变题目卡 / 环形倒计时 / 胶囊按钮</p>
+  <h1>TimesTableGO · UI 预览</h1>
+  <div class="hint">新版三页布局（练习 / 统计 / 设置）。统计页从最新数据恢复：概览指标卡、正确率面积走势图、成就徽章、九九表掌握度矩阵、最近作答。配色与形状均沿用 AppTheme 设计系统。</div>
+  <div class="row">
 
-  <!-- 练习页 -->
-  <div class="phone">
-    <div class="appbar">
-      <div class="mic">🎤</div>
-      <div class="title">乘法口诀背诵</div>
-    </div>
-    <div class="body">
-      <div class="grad-card">
-        <div class="pill">请作答</div>
-        <div class="q">7 × 8 = ?</div>
-        <div class="ring">3</div>
-        <div class="feedback">请在 3 秒内说出答案。</div>
-        <div class="feedback" style="opacity:.85;font-size:13px;">识别：五十六</div>
-      </div>
-      <div class="row">
-        <button class="btn red">■ 停止</button>
-        <button class="btn outline">⚙ 设置</button>
-      </div>
-      <div class="chip">已保存 128 条本地记录。</div>
-    </div>
-  </div>
-
-  <!-- 设置页 -->
-  <div class="phone">
-    <div class="appbar">
-      <div class="mic">🎤</div>
-      <div class="title">设置</div>
-    </div>
-    <div class="body">
-      <div class="header-card">
-        <div class="h">设置</div>
-        <div class="d">音频、答题节奏与离线更新都在本机完成。</div>
-      </div>
-      <div class="card" style="display:flex;align-items:center;justify-content:space-between;">
-        <div>
-          <div class="head">题目音频</div>
-          <div class="desc">内置中文音频，不联网。</div>
+    <!-- 练习页 -->
+    <div class="phone">
+      <div class="topbar"><div class="badge">🎤</div><div class="t">乘法口诀背诵</div></div>
+      <div class="content">
+        <div class="gcard">
+          <span class="pill">请作答</span>
+          <div class="q">7 × 8 = ?</div>
+          <div class="ring">3</div>
+          <div class="fb">请在 3 秒内说出答案。</div>
         </div>
-        <div class="switch"></div>
+        <div class="btns">
+          <button class="btn g">▶ 开始</button>
+          <button class="btn r">■ 停止</button>
+          <button class="btn o">⚙ 设置</button>
+        </div>
+        <div class="card" style="text-align:center;color:var(--onSurfaceVariant);font-size:12px;">已保存 42 条本地记录。</div>
       </div>
-      <div class="field">
-        <label>答题时间（秒）</label>
-        <input value="3" />
-      </div>
-      <div class="label">应用更新</div>
-      <div class="ver">当前版本 0.1.9（10）</div>
-      <button class="btn green" style="width:100%;justify-content:center;">检查更新</button>
-      <button class="btn outline" style="width:100%;justify-content:center;border-color:var(--green);">返回练习</button>
+      <div class="nav"><div class="on">练习</div><div>统计</div><div>设置</div></div>
     </div>
+
+    <!-- 统计页 -->
+    <div class="phone">
+      <div class="topbar"><div class="badge">🎤</div><div class="t">学习统计</div></div>
+      <div class="content">
+        <div class="card" style="background:var(--primaryContainer);color:var(--onPrimaryContainer);">
+          <div style="font-weight:800;font-size:16px;">学习统计</div>
+          <div style="font-size:12px;opacity:.8;">所有数据都保存在本机，不会上传。</div>
+        </div>
+        <div class="metrics">
+          <div class="metric"><div class="l">总练习</div><div class="v">42</div><div class="s">题</div></div>
+          <div class="metric"><div class="l">正确率</div><div class="v">88%</div></div>
+          <div class="metric"><div class="l">当前连对</div><div class="v">6</div><div class="s">题</div></div>
+          <div class="metric"><div class="l">九表覆盖</div><div class="v">64%</div><div class="s">52 / 81</div></div>
+        </div>
+        <div class="sec">正确率走势</div>
+        <div class="card">
+          <svg class="chart" viewBox="0 0 260 150" preserveAspectRatio="none">
+            <line x1="0" y1="0" x2="260" y2="0" stroke="#D5DAD4"/>
+            <line x1="0" y1="75" x2="260" y2="75" stroke="#D5DAD4"/>
+            <line x1="0" y1="150" x2="260" y2="150" stroke="#D5DAD4"/>
+            <defs><linearGradient id="g" x1="0" y1="0" x2="0" y2="1">
+              <stop offset="0%" stop-color="#246B45" stop-opacity="0.33"/>
+              <stop offset="100%" stop-color="#246B45" stop-opacity="0"/>
+            </linearGradient></defs>
+            <path d="M0,150 L0,120 L43,90 L86,70 L130,55 L173,48 L216,40 L260,30 L260,150 Z" fill="url(#g)"/>
+            <polyline points="0,120 43,90 86,70 130,55 173,48 216,40 260,30" fill="none" stroke="#246B45" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+            <circle cx="260" cy="30" r="4" fill="#2F6F8F"/>
+          </svg>
+        </div>
+        <div class="sec">成就</div>
+        <div class="badges">
+          <div class="badge-item"><div class="circle">★</div><div class="bt">初出茅庐</div><div class="bs">完成第 1 题</div></div>
+          <div class="badge-item"><div class="circle">★</div><div class="bt">渐入佳境</div><div class="bs">正确率≥80%</div></div>
+          <div class="badge-item"><div class="circle off">☆</div><div class="bt">连战连胜</div><div class="bs">连对10题</div></div>
+          <div class="badge-item"><div class="circle off">☆</div><div class="bt">九九归一</div><div class="bs">练完81题</div></div>
+        </div>
+        <div class="sec">九九表掌握度</div>
+        <div class="card">
+          <div class="matrix" id="m"></div>
+          <div class="legend">
+            <span><i class="dot" style="background:#EDF1EC"></i>未练</span>
+            <span><i class="dot" style="background:#5AA46E"></i>熟练</span>
+            <span><i class="dot" style="background:#E0A93B"></i>一般</span>
+            <span><i class="dot" style="background:#B23A48"></i>薄弱</span>
+          </div>
+        </div>
+        <div class="sec">最近作答</div>
+        <div class="attempt"><div><div class="l">7 × 8 = 56</div><div class="sub">作答：五十六</div></div><div class="tag ok">正确</div></div>
+        <div class="attempt"><div><div class="l">6 × 9 = 54</div><div class="sub">作答：四十五</div></div><div class="tag no">订正</div></div>
+      </div>
+      <div class="nav"><div>练习</div><div class="on">统计</div><div>设置</div></div>
+    </div>
+
   </div>
+<script>
+  // 生成 9x9 掌握度矩阵（演示用随机数据）
+  const colors = {none:'#EDF1EC', good:'#5AA46E', mid:'#E0A93B', weak:'#B23A48'};
+  function colorFor(v){ if(v===null) return colors.none; if(v>=0.7) return colors.good; if(v>=0.5) return colors.mid; return colors.weak; }
+  let html = '<div class="h"></div>';
+  for(let b=1;b<=9;b++) html += '<div class="h">'+b+'</div>';
+  for(let a=1;a<=9;a++){
+    html += '<div class="h">'+a+'</div>';
+    for(let b=1;b<=9;b++){
+      const r = Math.random();
+      const v = r < 0.18 ? null : Math.random();
+      const c = v===null ? '' : (v>=0.7?Math.round(v*9):'');
+      html += '<div class="cell" style="background:'+colorFor(v)+'">'+c+'</div>';
+    }
+  }
+  document.getElementById('m').innerHTML = html;
+</script>
 </body>
 </html>

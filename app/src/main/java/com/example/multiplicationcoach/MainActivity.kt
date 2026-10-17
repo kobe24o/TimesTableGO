@@ -14,6 +14,7 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.Canvas
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
@@ -27,22 +28,30 @@ import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.layout.aspectRatio
 import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.LazyRow
+import androidx.compose.foundation.lazy.items
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.NavigationBar
+import androidx.compose.material3.NavigationBarItem
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.BarChart
 import androidx.compose.material.icons.filled.Mic
 import androidx.compose.material.icons.filled.PlayArrow
 import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Star
 import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material.icons.outlined.Star
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.Icon
 import androidx.compose.material3.OutlinedButton
@@ -61,6 +70,10 @@ import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.graphics.Brush
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.Stroke
+import androidx.compose.ui.graphics.StrokeCap
+import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -431,6 +444,8 @@ class PracticePrefs(context: Context) {
 
 private val allProblems = (1..9).flatMap { a -> (1..9).map { b -> Problem(a, b) } }
 
+enum class AppTab { Practice, Stats, Settings }
+
 @OptIn(androidx.compose.material3.ExperimentalMaterial3Api::class)
 @Composable
 fun MultiplicationApp(
@@ -441,7 +456,7 @@ fun MultiplicationApp(
     val updateState by updateViewModel.state.collectAsState()
     val context = androidx.compose.ui.platform.LocalContext.current
     val permission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { viewModel.refreshPermission() }
-    var showSettings by remember { mutableStateOf(false) }
+    var tab by remember { mutableStateOf(AppTab.Practice) }
     LaunchedEffect(Unit) {
         if (ContextCompat.checkSelfPermission(context, Manifest.permission.RECORD_AUDIO) != 0) permission.launch(Manifest.permission.RECORD_AUDIO)
         updateViewModel.checkForUpdates(automatic = true)
@@ -464,20 +479,50 @@ fun MultiplicationApp(
                     )
                 }
                 Spacer(Modifier.width(12.dp))
-                Text(if (showSettings) "设置" else "乘法口诀背诵")
+                Text(
+                    when (tab) {
+                        AppTab.Practice -> "乘法口诀背诵"
+                        AppTab.Stats -> "学习统计"
+                        AppTab.Settings -> "设置"
+                    },
+                )
             }
         })
+    }, bottomBar = {
+        NavigationBar(containerColor = MaterialTheme.colorScheme.surface) {
+            NavigationBarItem(
+                selected = tab == AppTab.Practice,
+                onClick = { tab = AppTab.Practice },
+                icon = { Icon(Icons.Default.Mic, contentDescription = null) },
+                label = { Text("练习") },
+            )
+            NavigationBarItem(
+                selected = tab == AppTab.Stats,
+                onClick = { tab = AppTab.Stats },
+                icon = { Icon(Icons.Default.BarChart, contentDescription = null) },
+                label = { Text("统计") },
+            )
+            NavigationBarItem(
+                selected = tab == AppTab.Settings,
+                onClick = { tab = AppTab.Settings },
+                icon = { Icon(Icons.Default.Settings, contentDescription = null) },
+                label = { Text("设置") },
+            )
+        }
     }) { padding ->
-        if (showSettings) SettingsScreen(
-            state = state,
-            update = viewModel::updateSettings,
-            updateState = updateState,
-            checkForUpdates = { updateViewModel.checkForUpdates(automatic = false) },
-            downloadUpdate = updateViewModel::downloadAvailableUpdate,
-            installUpdate = updateViewModel::installDownloadedUpdate,
-            close = { showSettings = false },
-        )
-        else PracticeScreen(state, viewModel::start, viewModel::stop, viewModel::clearHistory, { showSettings = true }, Modifier.padding(padding))
+        when (tab) {
+            AppTab.Practice -> PracticeScreen(state, viewModel::start, viewModel::stop, viewModel::clearHistory, { tab = AppTab.Settings }, Modifier.padding(padding))
+            AppTab.Stats -> StatsScreen(state, Modifier.padding(padding))
+            AppTab.Settings -> SettingsScreen(
+                state = state,
+                update = viewModel::updateSettings,
+                updateState = updateState,
+                checkForUpdates = { updateViewModel.checkForUpdates(automatic = false) },
+                downloadUpdate = updateViewModel::downloadAvailableUpdate,
+                installUpdate = updateViewModel::installDownloadedUpdate,
+                close = { tab = AppTab.Practice },
+            )
+        }
     }
 }
 
@@ -637,6 +682,232 @@ fun SettingsScreen(
             }
         }
         item { Button(onClick = close, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text("返回练习") } }
+    }
+}
+
+@Composable
+fun StatsScreen(state: UiState, modifier: Modifier) {
+    val attempts = state.attempts
+    val total = attempts.size
+    val correctCount = attempts.count { it.correct }
+    val accuracy = if (total > 0) correctCount.toFloat() / total else 0f
+    val currentStreak = attempts.takeWhile { it.correct }.size
+    val distinctPairs = attempts.map { it.a to it.b }.toSet().size
+    val coverage = distinctPairs / 81f
+    val achievements = computeAchievements(total, correctCount, accuracy, currentStreak, coverage, distinctPairs)
+    LazyColumn(modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
+        item {
+            Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("学习统计", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    Text("所有数据都保存在本机，不会上传。", color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f))
+                }
+            }
+        }
+        if (total == 0) {
+            item {
+                Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(16.dp)) {
+                    Column(Modifier.fillMaxWidth().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                        Icon(Icons.Default.BarChart, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(36.dp))
+                        Text("还没有作答记录", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                        Text("去「练习」页用语音背诵九九乘法表，这里会显示正确率、掌握度和成就。", color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+                    }
+                }
+            }
+        } else {
+            item {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    MetricCard("总练习", "$total", "题", Modifier.weight(1f))
+                    MetricCard("正确率", "${(accuracy * 100).toInt()}%", null, Modifier.weight(1f))
+                }
+            }
+            item {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+                    MetricCard("当前连对", "$currentStreak", "题", Modifier.weight(1f))
+                    MetricCard("九表覆盖", "${(coverage * 100).toInt()}%", "$distinctPairs / 81", Modifier.weight(1f))
+                }
+            }
+            item { SectionTitle("正确率走势") }
+            item {
+                Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
+                    AccuracyChart(attempts, Modifier.padding(14.dp))
+                }
+            }
+            item { SectionTitle("成就") }
+            item { AchievementBadges(achievements) }
+            item { SectionTitle("九九表掌握度") }
+            item {
+                Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
+                    Column(Modifier.padding(14.dp)) { MistakeMatrix(attempts) }
+                }
+            }
+            item {
+                Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+                    SectionTitle("最近作答")
+                    Text("$total 条记录", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+            items(attempts.take(10)) { AttemptChip(it) }
+        }
+    }
+}
+
+@Composable
+fun SectionTitle(text: String) {
+    Text(text, fontSize = 16.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface, modifier = Modifier.padding(top = 2.dp))
+}
+
+@Composable
+fun MetricCard(label: String, value: String, subtitle: String? = null, modifier: Modifier = Modifier) {
+    Surface(modifier, color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(16.dp), shadowElevation = 2.dp) {
+        Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+            Text(label, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 13.sp)
+            Text(value, fontWeight = FontWeight.Bold, fontSize = 28.sp, color = MaterialTheme.colorScheme.onSurface)
+            if (subtitle != null) Text(subtitle, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 11.sp)
+        }
+    }
+}
+
+@Composable
+fun AccuracyChart(attempts: List<Attempt>, modifier: Modifier = Modifier) {
+    val chrono = attempts.asReversed()
+    val points = chrono.mapIndexed { index, _ -> chrono.take(index + 1).count { it.correct }.toFloat() / (index + 1) }
+    if (points.isEmpty()) {
+        Box(modifier.fillMaxWidth().height(180.dp), contentAlignment = Alignment.Center) {
+            Text("开始练习后这里会显示正确率走势。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+        }
+        return
+    }
+    Canvas(modifier.fillMaxWidth().height(180.dp)) {
+        val w = size.width
+        val h = size.height
+        val grid = Color(0xFFD5DAD4)
+        listOf(0f, 0.5f, 1f).forEach { g ->
+            val y = h - g * h
+            drawLine(grid, Offset(0f, y), Offset(w, y), strokeWidth = 1.dp.toPx())
+        }
+        val step = if (points.size == 1) 0f else w / (points.size - 1)
+        val xy = points.mapIndexed { i, v -> Offset(i * step, h - v * h) }
+        val fillPath = Path().apply {
+            moveTo(0f, h)
+            xy.forEach { lineTo(it.x, it.y) }
+            lineTo(w, h)
+            close()
+        }
+        drawPath(fillPath, Brush.verticalGradient(listOf(Color(0x55246B45), Color(0x00246B45))))
+        val linePath = Path().apply { xy.forEachIndexed { i, p -> if (i == 0) moveTo(p.x, p.y) else lineTo(p.x, p.y) } }
+        drawPath(linePath, Color(0xFF246B45), style = Stroke(width = 4.dp.toPx(), cap = StrokeCap.Round, join = StrokeJoin.Round))
+        drawCircle(Color(0xFF2F6F8F), radius = 5.dp.toPx(), center = xy.last())
+    }
+}
+
+data class Achievement(val title: String, val subtitle: String, val unlocked: Boolean)
+
+fun computeAchievements(total: Int, correct: Int, accuracy: Float, streak: Int, coverage: Float, distinct: Int): List<Achievement> = listOf(
+    Achievement("初出茅庐", "完成第 1 题", total >= 1),
+    Achievement("渐入佳境", "正确率 ≥ 80%", total >= 10 && accuracy >= 0.8f),
+    Achievement("连战连胜", "连续答对 10 题", streak >= 10),
+    Achievement("稳如老手", "正确率 ≥ 95%", total >= 50 && accuracy >= 0.95f),
+    Achievement("九九归一", "练完全部 81 题", distinct >= 81),
+    Achievement("百题斩", "累计练习 100 题", total >= 100),
+)
+
+@Composable
+fun AchievementBadges(achievements: List<Achievement>) {
+    LazyRow(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
+        items(achievements) { ach ->
+            Column(
+                modifier = Modifier.width(92.dp),
+                horizontalAlignment = Alignment.CenterHorizontally,
+                verticalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Surface(
+                    shape = CircleShape,
+                    color = if (ach.unlocked) MaterialTheme.colorScheme.primaryContainer else MaterialTheme.colorScheme.surfaceVariant,
+                    shadowElevation = if (ach.unlocked) 3.dp else 0.dp,
+                ) {
+                    Box(Modifier.size(56.dp), contentAlignment = Alignment.Center) {
+                        Icon(
+                            if (ach.unlocked) Icons.Filled.Star else Icons.Outlined.Star,
+                            contentDescription = null,
+                            tint = if (ach.unlocked) Color(0xFF246B45) else MaterialTheme.colorScheme.onSurfaceVariant,
+                            modifier = Modifier.size(30.dp),
+                        )
+                    }
+                }
+                Text(ach.title, fontSize = 12.sp, fontWeight = FontWeight.Bold, textAlign = TextAlign.Center, color = if (ach.unlocked) MaterialTheme.colorScheme.onSurface else MaterialTheme.colorScheme.onSurfaceVariant)
+                Text(ach.subtitle, fontSize = 10.sp, textAlign = TextAlign.Center, color = MaterialTheme.colorScheme.onSurfaceVariant, lineHeight = 12.sp)
+            }
+        }
+    }
+}
+
+fun masteryColor(mastery: Float?): Color = when {
+    mastery == null -> Color(0xFFEDF1EC)
+    mastery >= 0.9f -> Color(0xFF246B45)
+    mastery >= 0.7f -> Color(0xFF5AA46E)
+    mastery >= 0.5f -> Color(0xFFE0A93B)
+    else -> Color(0xFFB23A48)
+}
+
+@Composable
+fun MistakeMatrix(attempts: List<Attempt>, modifier: Modifier = Modifier) {
+    val correctOf = { a: Int, b: Int -> attempts.count { it.a == a && it.b == b && it.correct } }
+    val masteryOf = { a: Int, b: Int ->
+        val ca = attempts.filter { it.a == a && it.b == b }
+        if (ca.isEmpty()) null else ca.count { it.correct }.toFloat() / ca.size
+    }
+    Column(modifier, verticalArrangement = Arrangement.spacedBy(6.dp)) {
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+            Spacer(Modifier.width(28.dp))
+            (1..9).forEach { b ->
+                Box(Modifier.weight(1f), contentAlignment = Alignment.Center) { Text(b.toString(), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+            }
+        }
+        (1..9).forEach { a ->
+            Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(6.dp), verticalAlignment = Alignment.CenterVertically) {
+                Box(Modifier.width(28.dp), contentAlignment = Alignment.Center) { Text(a.toString(), fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant) }
+                (1..9).forEach { b ->
+                    val m = masteryOf(a, b)
+                    val c = correctOf(a, b)
+                    Box(
+                        Modifier.weight(1f).aspectRatio(1f).background(masteryColor(m), RoundedCornerShape(6.dp)),
+                        contentAlignment = Alignment.Center,
+                    ) {
+                        if (m != null) Text(c.toString(), fontSize = 11.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    }
+                }
+            }
+        }
+        Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
+            listOf(Triple(Color(0xFFEDF1EC), "未练", null), Triple(Color(0xFF5AA46E), "熟练", null), Triple(Color(0xFFE0A93B), "一般", null), Triple(Color(0xFFB23A48), "薄弱", null)).forEach { (color, label, _) ->
+                Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Box(Modifier.size(12.dp).background(color, RoundedCornerShape(3.dp)))
+                    Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun AttemptChip(attempt: Attempt) {
+    Surface(color = MaterialTheme.colorScheme.surface, shape = RoundedCornerShape(12.dp), shadowElevation = 1.dp) {
+        Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
+            Column(Modifier.weight(1f)) {
+                Text("${attempt.a} × ${attempt.b} = ${attempt.expected}", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
+                Text("作答：" + attempt.transcript.ifBlank { "未识别" }, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+            }
+            Surface(color = if (attempt.correct) Color(0xFFD8EADD) else Color(0xFFFBE3E1), shape = RoundedCornerShape(999.dp)) {
+                Text(
+                    if (attempt.correct) "正确" else "订正",
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
+                    color = if (attempt.correct) Color(0xFF0C3320) else Color(0xFFB23A48),
+                    fontWeight = FontWeight.Bold,
+                    fontSize = 12.sp,
+                )
+            }
+        }
     }
 }
 
