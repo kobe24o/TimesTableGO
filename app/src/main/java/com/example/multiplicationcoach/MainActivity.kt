@@ -14,6 +14,8 @@ import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
@@ -21,6 +23,10 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
@@ -32,6 +38,17 @@ import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Switch
 import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.Mic
+import androidx.compose.material.icons.filled.PlayArrow
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material.icons.filled.Stop
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedButton
+import androidx.compose.material3.Shapes
+import androidx.compose.material3.Surface
+import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
@@ -43,6 +60,7 @@ import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
@@ -429,7 +447,27 @@ fun MultiplicationApp(
         updateViewModel.checkForUpdates(automatic = true)
     }
     DisposableEffect(Unit) { onDispose { viewModel.stop() } }
-    Scaffold(topBar = { TopAppBar(title = { Text(if (showSettings) "设置" else "乘法口诀背诵") }) }) { padding ->
+    Scaffold(topBar = {
+        TopAppBar(title = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(34.dp)
+                        .background(Color(0xFF246B45), CircleShape),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.Mic,
+                        contentDescription = null,
+                        tint = Color.White,
+                        modifier = Modifier.size(20.dp)
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Text(if (showSettings) "设置" else "乘法口诀背诵")
+            }
+        })
+    }) { padding ->
         if (showSettings) SettingsScreen(
             state = state,
             update = viewModel::updateSettings,
@@ -445,25 +483,85 @@ fun MultiplicationApp(
 
 @Composable
 fun PracticeScreen(state: UiState, start: () -> Unit, stop: () -> Unit, clear: () -> Unit, settings: () -> Unit, modifier: Modifier) {
-    Column(modifier.fillMaxSize().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(16.dp)) {
-        Card(Modifier.fillMaxWidth(), colors = CardDefaults.cardColors(containerColor = Color.White)) {
-            Column(Modifier.padding(22.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(12.dp)) {
-                Text(state.phase)
-                Text(state.questionText(), fontSize = 40.sp, fontWeight = FontWeight.Bold)
-                if (state.countdown > 0) Text(state.countdown.toString() + " 秒")
-                Text(state.feedback, textAlign = TextAlign.Center)
-                if (state.transcript.isNotBlank()) Text("识别：" + state.transcript, color = Color.Gray)
-                if (!state.localAsrReady) Text(state.localAsrReason.orEmpty(), color = Color(0xFFB23A48), textAlign = TextAlign.Center)
+    val total = state.settings.answerTimeLimitSeconds.coerceAtLeast(1)
+    Column(modifier.fillMaxSize().padding(20.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(18.dp)) {
+        Card(
+            Modifier.fillMaxWidth(),
+            shape = RoundedCornerShape(20.dp),
+            colors = CardDefaults.cardColors(containerColor = Color.Transparent),
+            elevation = CardDefaults.cardElevation(defaultElevation = 6.dp)
+        ) {
+            Box(
+                Modifier
+                    .fillMaxWidth()
+                    .background(Brush.verticalGradient(listOf(Color(0xFF246B45), Color(0xFF2F6F8F))), RoundedCornerShape(20.dp))
+                    .padding(24.dp),
+                contentAlignment = Alignment.Center
+            ) {
+                Column(horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(14.dp)) {
+                    Surface(color = Color.White.copy(alpha = 0.18f), shape = RoundedCornerShape(999.dp)) {
+                        Text(state.phase, modifier = Modifier.padding(horizontal = 14.dp, vertical = 6.dp), color = Color.White, fontSize = 14.sp)
+                    }
+                    Text(state.questionText(), fontSize = 46.sp, fontWeight = FontWeight.Bold, color = Color.White)
+                    if (state.countdown > 0) {
+                        Box(contentAlignment = Alignment.Center) {
+                            CircularProgressIndicator(
+                                progress = state.countdown / total.toFloat(),
+                                modifier = Modifier.size(64.dp),
+                                color = Color.White,
+                                trackColor = Color.White.copy(alpha = 0.25f),
+                                strokeWidth = 6.dp
+                            )
+                            Text(state.countdown.toString(), color = Color.White, fontWeight = FontWeight.Bold, fontSize = 22.sp)
+                        }
+                    }
+                    Text(state.feedback, textAlign = TextAlign.Center, color = Color.White.copy(alpha = 0.92f))
+                    if (state.transcript.isNotBlank()) Text("识别：" + state.transcript, color = Color.White.copy(alpha = 0.85f))
+                    if (!state.localAsrReady) Text(state.localAsrReason.orEmpty(), color = Color(0xFFFFDAD6), textAlign = TextAlign.Center)
+                }
             }
         }
         Row(horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-            Button(onClick = start, enabled = !state.running) { Text("开始") }
-            Button(onClick = stop, enabled = state.running, colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB23A48))) { Text("停止") }
-            Button(onClick = settings) { Text("设置") }
+            Button(
+                onClick = start, enabled = !state.running,
+                shape = RoundedCornerShape(999.dp),
+                contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)
+            ) {
+                Icon(Icons.Default.PlayArrow, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("开始")
+            }
+            Button(
+                onClick = stop, enabled = state.running,
+                colors = ButtonDefaults.buttonColors(containerColor = Color(0xFFB23A48)),
+                shape = RoundedCornerShape(999.dp),
+                contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)
+            ) {
+                Icon(Icons.Default.Stop, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("停止")
+            }
+            OutlinedButton(
+                onClick = settings,
+                shape = RoundedCornerShape(999.dp),
+                contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)
+            ) {
+                Icon(Icons.Default.Settings, contentDescription = null)
+                Spacer(Modifier.width(6.dp))
+                Text("设置")
+            }
         }
         if (!state.hasAudioPermission) Text("需要麦克风权限才能语音作答。", color = Color(0xFFB23A48))
-        Text("已保存 " + state.attempts.size + " 条本地记录。")
-        if (state.attempts.isNotEmpty()) Button(onClick = clear) { Text("清空历史") }
+        Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(12.dp)) {
+            Text(
+                "已保存 " + state.attempts.size + " 条本地记录。",
+                modifier = Modifier.padding(12.dp),
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+        }
+        if (state.attempts.isNotEmpty()) {
+            TextButton(onClick = clear) { Text("清空历史", color = Color(0xFFB23A48)) }
+        }
     }
 }
 
@@ -480,53 +578,92 @@ fun SettingsScreen(
     var draft by remember(state.settings) { mutableStateOf(state.settings) }
     LazyColumn(Modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
-            Row(verticalAlignment = Alignment.CenterVertically) {
-                Column(Modifier.weight(1f)) { Text("题目音频", fontWeight = FontWeight.Bold); Text("内置中文音频，不联网。") }
-                Switch(checked = draft.promptAudioEnabled, onCheckedChange = { value -> draft = draft.copy(promptAudioEnabled = value); update(draft) })
+            Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                    Text("设置", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    Text("音频、答题节奏与离线更新都在本机完成。", color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f))
+                }
             }
         }
-        item { Text(if (state.localAsrReady) "本地 ASR 已就绪：语音不会上传。" else state.localAsrReason.orEmpty()) }
         item {
-            OutlinedTextField(value = draft.answerTimeLimitSeconds.toString(), onValueChange = { text ->
-                draft = draft.copy(answerTimeLimitSeconds = text.filter(Char::isDigit).toIntOrNull()?.coerceIn(1, 15) ?: 3)
-                update(draft)
-            }, label = { Text("答题时间（秒）") })
+            Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(16.dp)) {
+                Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
+                    Column(Modifier.weight(1f)) { Text("题目音频", fontWeight = FontWeight.Bold); Text("内置中文音频，不联网。") }
+                    Switch(checked = draft.promptAudioEnabled, onCheckedChange = { value -> draft = draft.copy(promptAudioEnabled = value); update(draft) })
+                }
+            }
+        }
+        item { Text(if (state.localAsrReady) "本地 ASR 已就绪：语音不会上传。" else state.localAsrReason.orEmpty(), color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        item {
+            Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(16.dp)) {
+                OutlinedTextField(
+                    value = draft.answerTimeLimitSeconds.toString(),
+                    onValueChange = { text ->
+                        draft = draft.copy(answerTimeLimitSeconds = text.filter(Char::isDigit).toIntOrNull()?.coerceIn(1, 15) ?: 3)
+                        update(draft)
+                    },
+                    label = { Text("答题时间（秒）") },
+                    modifier = Modifier.fillMaxWidth()
+                )
+            }
         }
         item { Text("应用更新", fontWeight = FontWeight.Bold) }
         item { Text("当前版本 " + BuildConfig.VERSION_NAME + "（" + BuildConfig.VERSION_CODE + "）") }
         item {
             when (updateState) {
-                AppUpdateUiState.Idle -> Button(onClick = checkForUpdates) { Text("检查更新") }
+                AppUpdateUiState.Idle -> Button(onClick = checkForUpdates, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text("检查更新") }
                 AppUpdateUiState.Checking -> Text("正在安全检查更新…")
-                AppUpdateUiState.UpToDate -> Button(onClick = checkForUpdates) { Text("已是最新版本，重新检查") }
+                AppUpdateUiState.UpToDate -> Button(onClick = checkForUpdates, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text("已是最新版本，重新检查") }
                 is AppUpdateUiState.Available -> {
                     val suffix = if (updateState.mobileData) "当前为移动数据，需你确认后下载。" else "已发现可用更新。"
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Text("发现新版本 " + updateState.manifest.version.versionName + "。" + suffix)
-                        Button(onClick = downloadUpdate) { Text("下载更新") }
+                        Button(onClick = downloadUpdate, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text("下载更新") }
                     }
                 }
                 is AppUpdateUiState.Downloading -> Text(
                     "正在下载更新：" + updateState.receivedBytes / 1024 / 1024 + " / " + updateState.totalBytes / 1024 / 1024 + " MB",
                 )
-                is AppUpdateUiState.ReadyToInstall -> Button(onClick = installUpdate) { Text("安装已验证的更新") }
+                is AppUpdateUiState.ReadyToInstall -> Button(onClick = installUpdate, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text("安装已验证的更新") }
                 is AppUpdateUiState.NeedsInstallPermission -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text("请先允许本应用安装更新，再返回点此继续。")
-                    Button(onClick = installUpdate) { Text("允许安装并继续") }
+                    Button(onClick = installUpdate, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text("允许安装并继续") }
                 }
                 AppUpdateUiState.Installing -> Text("已交给 Android 系统安装器确认安装。")
                 is AppUpdateUiState.Error -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
                     Text(updateState.message, color = Color(0xFFB23A48))
-                    Button(onClick = checkForUpdates) { Text("重试检查") }
+                    Button(onClick = checkForUpdates, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text("重试检查") }
                 }
             }
         }
-        item { Button(onClick = close) { Text("返回练习") } }
+        item { Button(onClick = close, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text("返回练习") } }
     }
 }
 
 @Composable
 fun AppTheme(content: @Composable () -> Unit) = MaterialTheme(
-    colorScheme = androidx.compose.material3.lightColorScheme(primary = Color(0xFF246B45), background = Color(0xFFF7F7F2)),
+    colorScheme = androidx.compose.material3.lightColorScheme(
+        primary = Color(0xFF246B45),
+        onPrimary = Color.White,
+        primaryContainer = Color(0xFFD8EADD),
+        onPrimaryContainer = Color(0xFF0C3320),
+        secondary = Color(0xFF2F6F8F),
+        onSecondary = Color.White,
+        secondaryContainer = Color(0xFFD6E6EF),
+        tertiary = Color(0xFFB23A48),
+        error = Color(0xFFB23A48),
+        background = Color(0xFFF7F7F2),
+        onBackground = Color(0xFF182027),
+        surface = Color.White,
+        onSurface = Color(0xFF182027),
+        surfaceVariant = Color(0xFFEDF1EC),
+        onSurfaceVariant = Color(0xFF59636E),
+        outline = Color(0xFFD5DAD4),
+    ),
+    shapes = Shapes(
+        small = RoundedCornerShape(12.dp),
+        medium = RoundedCornerShape(16.dp),
+        large = RoundedCornerShape(28.dp),
+    ),
     content = content,
 )
