@@ -130,6 +130,7 @@ enum class AppLanguage { ZH, EN }
 /** Resolves the in-app display language for composables without threading it through every parameter. */
 val LocalAppLanguage = compositionLocalOf { AppLanguage.ZH }
 
+@Composable
 fun appText(zh: String, en: String): String =
     if (LocalAppLanguage.current == AppLanguage.EN) en else zh
 
@@ -191,12 +192,13 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
 
     /** (Re)builds the on-device recognizer for the given language. */
     private fun initializeAsr(language: AppLanguage) {
+        val app = getApplication<Application>()
         viewModelScope.launch(Dispatchers.IO) {
             _state.value = _state.value.copy(
                 localAsrReady = false,
                 localAsrReason = L("正在检查离线识别资源…", "Checking offline recognition resources…"),
             )
-            localAsr.initialize(application, language).fold(
+            localAsr.initialize(app, language).fold(
                 onSuccess = {
                     _state.value = _state.value.copy(localAsrReady = true, localAsrReason = null)
                 },
