@@ -28,7 +28,7 @@ test('records that the uploaded build uses no non-exempt encryption', async () =
     return null;
   }, 'build-1');
 
-  assert.deepEqual(requests, [{
+  assert.deepEqual(requests, [{path:'/v1/builds/build-1',options:undefined}, {
     path: '/v1/builds/build-1',
     options: {
       method: 'PATCH',
@@ -93,4 +93,17 @@ test('leaves an uploaded build ready when another beta review is pending', async
   assert.deepEqual(messages, [
     'Build 20260919073600 is uploaded and assigned; a previous Beta App Review is still pending.',
   ]);
+});
+
+test('does not rewrite an existing encryption declaration', async () => {
+  const requests=[];
+  await recordExemptEncryptionUse(async(path,options)=>{
+    requests.push({path,options});
+    return {data:{attributes:{usesNonExemptEncryption:false}}};
+  },'build-1');
+  assert.equal(requests.length,1);
+  assert.equal(requests[0].options,undefined);
+});
+test('does not override a non-exempt encryption declaration', async () => {
+  await assert.rejects(()=>recordExemptEncryptionUse(async()=>({data:{attributes:{usesNonExemptEncryption:true}}}),'build-1'),/non-exempt encryption/);
 });

@@ -64,6 +64,10 @@ export async function waitForProcessedBuild(
 }
 
 export async function recordExemptEncryptionUse(api, buildId) {
+  const current = await api(`/v1/builds/${buildId}`);
+  const declaration = current?.data?.attributes?.usesNonExemptEncryption;
+  if (declaration === false) return;
+  if (declaration === true) throw new Error('Build declares non-exempt encryption; refusing to overwrite it.');
   await api(`/v1/builds/${buildId}`, {
     method: 'PATCH',
     body: JSON.stringify({
