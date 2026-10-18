@@ -31,6 +31,13 @@ void main() {
     (tester) async {
       final c = PracticeController(voice: SilentVoice());
       await tester.pumpWidget(TimesTableApp(controller: c));
+      expect(find.text('Start practice'), findsOneWidget);
+      await tester.tap(find.text('Settings'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('中文'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text('练习'));
+      await tester.pumpAndSettle();
       expect(find.text('开始练习'), findsOneWidget);
       await tester.tap(find.text('统计'));
       await tester.pumpAndSettle();

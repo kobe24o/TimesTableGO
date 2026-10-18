@@ -10,14 +10,14 @@ class Problem {
 }
 
 class Settings {
-  const Settings({this.language = 'zh', this.seconds = 3, this.prompt = true});
+  const Settings({this.language = 'en', this.seconds = 3, this.prompt = true});
   final String language;
   final int seconds;
   final bool prompt;
   factory Settings.fromJson(Map<String, dynamic> json) => Settings(
-    language: json['language'] == 'en' || json['language'] == 'EN'
-        ? 'en'
-        : 'zh',
+    language: json['language'] == 'zh' || json['language'] == 'ZH'
+        ? 'zh'
+        : 'en',
     seconds: ((json['seconds'] ?? json['answerTimeLimitSeconds'] ?? 3) as num)
         .toInt()
         .clamp(1, 15),

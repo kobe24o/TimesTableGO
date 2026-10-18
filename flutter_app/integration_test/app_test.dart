@@ -17,6 +17,12 @@ void main() {
   ) async {
     app.main();
     await tester.pumpAndSettle();
+    await tester.tap(find.text('Settings'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('中文'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('练习'));
+    await tester.pumpAndSettle();
     expect(find.text('开始练习'), findsOneWidget);
     await binding.takeScreenshot('practice-zh');
     await tester.tap(find.text('统计'));

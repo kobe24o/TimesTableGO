@@ -6,6 +6,11 @@ void main() {
     expect(Problem.all.length, 81);
     expect(Problem.all.map((p) => '${p.a},${p.b}').toSet().length, 81);
     expect(const Settings().seconds, 3);
+    expect(const Settings().language, 'en');
+    expect(Settings.fromJson({}).language, 'en');
+    expect(Settings.fromJson({'language': 'ZH'}).language, 'zh');
+    expect(Settings.fromJson({'language': 'zh'}).language, 'zh');
+    expect(Settings.fromJson({'language': 'EN'}).language, 'en');
     expect(Settings.fromJson({'seconds': 40}).seconds, 15);
     expect(Settings.fromJson({'seconds': 0}).seconds, 1);
   });

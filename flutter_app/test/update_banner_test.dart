@@ -23,8 +23,8 @@ void main() {
       ),
     );
     await tester.pumpAndSettle();
-    expect(find.text('下载更新失败'), findsOneWidget);
-    expect(find.text('重试'), findsOneWidget);
+    expect(find.text('Update download failed'), findsOneWidget);
+    expect(find.text('Retry'), findsOneWidget);
     c.dispose();
   });
 }
