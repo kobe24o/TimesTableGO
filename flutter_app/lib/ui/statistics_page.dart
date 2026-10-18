@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../domain/practice.dart';
 import '../practice/practice_controller.dart';
 import 'app.dart';
+import 'accuracy_trend.dart';
 
 class StatisticsPage extends StatelessWidget {
   const StatisticsPage({super.key, required this.controller});
@@ -92,6 +93,11 @@ class StatisticsPage extends StatelessWidget {
           ),
         ),
         if (recent.isNotEmpty) ...[
+          const SizedBox(height: 28),
+          AccuracyTrend(
+            values: s.accuracyTrend,
+            title: c.t('正确率走势', 'Accuracy over time'),
+          ),
           const SizedBox(height: 28),
           _heading(c.t('最近的答题节奏', 'Your recent rhythm')),
           const SizedBox(height: 12),

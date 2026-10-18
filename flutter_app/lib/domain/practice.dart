@@ -69,6 +69,15 @@ class Attempt {
 class PracticeStatistics {
   PracticeStatistics(this.attempts);
   final List<Attempt> attempts;
+  List<double> get accuracyTrend {
+    var correctSoFar = 0;
+    final chronological = attempts.reversed.toList();
+    return [
+      for (var i = 0; i < chronological.length; i++)
+        (correctSoFar += chronological[i].correct ? 1 : 0) / (i + 1),
+    ];
+  }
+
   int get correct => attempts.where((a) => a.correct).length;
   double get accuracy => attempts.isEmpty ? 0 : correct / attempts.length;
   int get streak => attempts.takeWhile((a) => a.correct).length;

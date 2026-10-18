@@ -67,6 +67,30 @@ void main() {
       expect(selectTranscript('21', 'twenty four', 'en'), 'twenty four');
     },
   );
+  test('accuracy trend preserves chronological cumulative values', () {
+    final stats = PracticeStatistics([
+      const Attempt(
+        problem: Problem(1, 1),
+        transcript: '1',
+        answer: 1,
+        timestamp: 3,
+      ),
+      const Attempt(
+        problem: Problem(1, 1),
+        transcript: '1',
+        answer: 1,
+        timestamp: 2,
+      ),
+      const Attempt(
+        problem: Problem(1, 1),
+        transcript: '2',
+        answer: 2,
+        timestamp: 1,
+      ),
+    ]);
+    expect(stats.accuracyTrend, [0, .5, 2 / 3]);
+    expect(PracticeStatistics([]).accuracyTrend, isEmpty);
+  });
   test('statistics uses latest first and all thresholds', () {
     final rows = List.generate(
       10,
