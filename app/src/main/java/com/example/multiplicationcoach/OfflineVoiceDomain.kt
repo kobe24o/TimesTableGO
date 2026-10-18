@@ -30,22 +30,76 @@ object AnswerTranscriptParser {
         '九' to 9,
     )
 
-    fun parse(transcript: String): Int? {
-        val candidates = allCandidates(transcript)
+    private val englishOnes = mapOf(
+        "zero" to 0, "one" to 1, "two" to 2, "three" to 3, "four" to 4, "five" to 5,
+        "six" to 6, "seven" to 7, "eight" to 8, "nine" to 9, "ten" to 10,
+        "eleven" to 11, "twelve" to 12, "thirteen" to 13, "fourteen" to 14, "fifteen" to 15,
+        "sixteen" to 16, "seventeen" to 17, "eighteen" to 18, "nineteen" to 19,
+    )
+    private val englishTens = mapOf(
+        "twenty" to 20, "thirty" to 30, "forty" to 40, "fifty" to 50,
+        "sixty" to 60, "seventy" to 70, "eighty" to 80, "ninety" to 90,
+    )
+    private val englishNumberPattern = Regex(
+        "(twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety|nineteen|eighteen|seventeen|sixteen|" +
+            "fifteen|fourteen|thirteen|twelve|eleven|ten|nine|eight|seven|six|five|four|three|two|one|zero)",
+    )
+
+    /** Extracts English number words (1..81) such as "twenty one" or "seventy". */
+    private fun englishCandidates(transcript: String): List<Int> {
+        val tokens = englishNumberPattern.findAll(transcript.lowercase()).map { it.value }.toList()
+        val result = mutableListOf<Int>()
+        var pendingTen = 0
+        for (tok in tokens) {
+            when {
+                tok in englishTens -> pendingTen = englishTens[tok]!!
+                tok in englishOnes -> {
+                    val v = englishOnes[tok]!!
+                    if (pendingTen > 0) {
+                        result += pendingTen + v
+                        pendingTen = 0
+                    } else {
+                        result += v
+                    }
+                }
+            }
+        }
+        if (pendingTen > 0) result += pendingTen
+        return result.filter { it in 1..81 }
+    }
+
+    /** Collapses English number words to digits so a spoken formula can be compared digit-wise. */
+    private fun englishToDigits(transcript: String): String {
+        val words = listOf(
+            "twenty", "thirty", "forty", "fifty", "sixty", "seventy", "eighty", "ninety",
+            "nineteen", "eighteen", "seventeen", "sixteen", "fifteen", "fourteen", "thirteen",
+            "twelve", "eleven", "ten", "nine", "eight", "seven", "six", "five", "four", "three", "two", "one", "zero",
+        )
+        var out = transcript.lowercase()
+        for (w in words) {
+            out = out.replace(Regex("\\b$w\\b")) { (englishOnes[w] ?: englishTens.getValue(w)).toString() }
+        }
+        return out.filter { it.isDigit() }
+    }
+
+    fun parse(transcript: String, language: AppLanguage = AppLanguage.ZH): Int? {
+        val candidates = allCandidates(transcript, language)
 
         if (candidates.isEmpty() || candidates.any { it !in 1..81 }) return null
         return candidates.distinct().singleOrNull()
     }
 
-    fun containsNumber(transcript: String): Boolean = allCandidates(transcript).any { it in 1..81 }
+    fun containsNumber(transcript: String, language: AppLanguage = AppLanguage.ZH): Boolean =
+        allCandidates(transcript, language).any { it in 1..81 }
 
-    fun containsAnswer(transcript: String, answer: Int): Boolean = allCandidates(transcript).any { it == answer }
+    fun containsAnswer(transcript: String, answer: Int, language: AppLanguage = AppLanguage.ZH): Boolean =
+        allCandidates(transcript, language).any { it == answer }
 
     /** Accepts a full spoken formula only when its factors match the asked problem. */
-    fun parseForProblem(a: Int, b: Int, expectedAnswer: Int, transcript: String): Int? {
-        if (containsAnswer(transcript, expectedAnswer)) return expectedAnswer
+    fun parseForProblem(a: Int, b: Int, expectedAnswer: Int, transcript: String, language: AppLanguage = AppLanguage.ZH): Int? {
+        if (containsAnswer(transcript, expectedAnswer, language)) return expectedAnswer
 
-        parse(transcript)?.let { answer -> if (answer == expectedAnswer) return answer }
+        parse(transcript, language)?.let { answer -> if (answer == expectedAnswer) return answer }
 
         val arabicCandidates = arabicCandidates(transcript)
         val chineseCandidates = chineseCandidates(transcript)
@@ -58,11 +112,15 @@ object AnswerTranscriptParser {
             .replace('两', '二')
         val arabicFormula = "$a$b$expectedAnswer"
         val chineseFormula = chineseText(a) + chineseText(b) + chineseText(expectedAnswer)
-        return if (compactNumbers == arabicFormula || compactNumbers == chineseFormula) expectedAnswer else null
+        if (compactNumbers == arabicFormula || compactNumbers == chineseFormula) return expectedAnswer
+        // English spoken formula, e.g. "three times four equals twelve".
+        if (language == AppLanguage.EN && englishToDigits(transcript) == arabicFormula) return expectedAnswer
+        return null
     }
 
-    private fun allCandidates(transcript: String): List<Int> =
-        arabicCandidates(transcript) + chineseCandidates(transcript) + mixedArabicChineseTensCandidates(transcript)
+    private fun allCandidates(transcript: String, language: AppLanguage): List<Int> =
+        arabicCandidates(transcript) + chineseCandidates(transcript) + mixedArabicChineseTensCandidates(transcript) +
+            if (language == AppLanguage.EN) englishCandidates(transcript) else emptyList()
 
     private fun arabicCandidates(transcript: String): List<Int> =
         arabicNumber.findAll(transcript).mapNotNull { match -> match.value.toIntOrNull() }.toList()
@@ -121,20 +179,20 @@ enum class FixedFeedback {
 }
 
 object PromptAudioIndex {
-    fun problemResourceName(a: Int, b: Int): String {
+    fun problemResourceName(a: Int, b: Int, language: AppLanguage = AppLanguage.ZH): String {
         require(a in 1..9 && b in 1..9) { "Multiplication operands must be in 1..9" }
-        return "prompt_${a}_${b}"
+        return "prompt_${a}_${b}" + if (language == AppLanguage.EN) "_en" else ""
     }
 
-    fun feedbackResourceName(feedback: FixedFeedback): String = when (feedback) {
-        FixedFeedback.Correct -> "feedback_correct"
-        FixedFeedback.Incorrect -> "feedback_incorrect"
-        FixedFeedback.Listen -> "feedback_listen"
-        FixedFeedback.NoSpeech -> "feedback_no_speech"
+    fun feedbackResourceName(feedback: FixedFeedback, language: AppLanguage = AppLanguage.ZH): String = when (feedback) {
+        FixedFeedback.Correct -> "feedback_correct" + if (language == AppLanguage.EN) "_en" else ""
+        FixedFeedback.Incorrect -> "feedback_incorrect" + if (language == AppLanguage.EN) "_en" else ""
+        FixedFeedback.Listen -> "feedback_listen" + if (language == AppLanguage.EN) "_en" else ""
+        FixedFeedback.NoSpeech -> "feedback_no_speech" + if (language == AppLanguage.EN) "_en" else ""
     }
 
-    fun correctionResourceName(a: Int, b: Int): String {
+    fun correctionResourceName(a: Int, b: Int, language: AppLanguage = AppLanguage.ZH): String {
         require(a in 1..9 && b in 1..9) { "Multiplication operands must be in 1..9" }
-        return "correction_${a}_${b}"
+        return "correction_${a}_${b}" + if (language == AppLanguage.EN) "_en" else ""
     }
 }

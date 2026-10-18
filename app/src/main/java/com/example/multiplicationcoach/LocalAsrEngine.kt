@@ -18,27 +18,28 @@ class LocalAsrEngine {
     private var vad: Vad? = null
 
     @Synchronized
-    fun initialize(context: Context): Result<Unit> = runCatching {
-        val (_, availability) = OfflineAsrAssets.install(context)
-        check(availability.available) { availability.reason ?: "离线识别不可用" }
+    fun initialize(context: Context, language: AppLanguage = AppLanguage.ZH): Result<Unit> = runCatching {
+        val (_, availability) = OfflineAsrAssets.install(context, language)
+        check(availability.available) { availability.reason ?: if (language == AppLanguage.EN) "Offline recognition unavailable" else "离线识别不可用" }
 
-        recognizer?.release()
-        vad?.release()
-
+        // SenseVoice is a multilingual model; pin it to the chosen language so
+        // English answers are transcribed as English words/digits instead of
+        // being auto-detected (which biases toward Chinese in mixed audio).
+        val senseVoiceLanguage = if (language == AppLanguage.EN) "en" else "zh"
         val modelConfig = OfflineModelConfig(
             senseVoice = OfflineSenseVoiceModelConfig(
                 model = "asr/sensevoice/model.int8.onnx",
-                language = "zh",
+                language = senseVoiceLanguage,
                 useInverseTextNormalization = true,
             ),
             tokens = "asr/sensevoice/tokens.txt",
             numThreads = 2,
         )
-        recognizer = OfflineRecognizer(
+        val newRecognizer = OfflineRecognizer(
             context.assets,
             OfflineRecognizerConfig(modelConfig = modelConfig),
         )
-        vad = Vad(
+        val newVad = Vad(
             context.assets,
             VadModelConfig(
                 sileroVadModelConfig = SileroVadModelConfig(
@@ -53,15 +54,24 @@ class LocalAsrEngine {
                 numThreads = 1,
             ),
         )
+        // Swap atomically under the same lock transcribe() uses so the engine
+        // is never released while a recognition is in flight (e.g. when the
+        // language is changed from Settings during a practice session).
+        synchronized(inferenceLock) {
+            recognizer?.release()
+            vad?.release()
+            recognizer = newRecognizer
+            vad = newVad
+        }
     }
 
-    suspend fun transcribe(pcm: ByteArray, expectedAnswer: Int): Result<String> = withContext(Dispatchers.Default) {
+    suspend fun transcribe(pcm: ByteArray, expectedAnswer: Int, language: AppLanguage = AppLanguage.ZH): Result<String> = withContext(Dispatchers.Default) {
         runCatching {
             if (pcm.size < 2) return@runCatching ""
             val samples = pcm.toPcmFloatArray()
             synchronized(inferenceLock) {
-                val currentVad = checkNotNull(vad) { "离线识别尚未初始化" }
-                val currentRecognizer = checkNotNull(recognizer) { "离线识别尚未初始化" }
+                val currentVad = checkNotNull(vad) { if (language == AppLanguage.EN) "Offline recognition is not initialized" else "离线识别尚未初始化" }
+                val currentRecognizer = checkNotNull(recognizer) { if (language == AppLanguage.EN) "Offline recognition is not initialized" else "离线识别尚未初始化" }
                 currentVad.reset()
                 currentVad.acceptWaveform(samples)
                 currentVad.flush()
@@ -90,6 +100,7 @@ class LocalAsrEngine {
                     vadTranscript = vadTranscript,
                     fullRecordingTranscript = fullRecordingTranscript,
                     expectedAnswer = expectedAnswer,
+                    language = language,
                 )
             }
         }
@@ -131,12 +142,13 @@ object LocalAsrTranscriptFallback {
         vadTranscript: String,
         fullRecordingTranscript: String,
         expectedAnswer: Int? = null,
+        language: AppLanguage = AppLanguage.ZH,
     ): String {
         return when {
-            expectedAnswer != null && AnswerTranscriptParser.containsAnswer(vadTranscript, expectedAnswer) -> vadTranscript
-            expectedAnswer != null && AnswerTranscriptParser.containsAnswer(fullRecordingTranscript, expectedAnswer) -> fullRecordingTranscript
-            AnswerTranscriptParser.containsNumber(vadTranscript) -> vadTranscript
-            AnswerTranscriptParser.containsNumber(fullRecordingTranscript) -> fullRecordingTranscript
+            expectedAnswer != null && AnswerTranscriptParser.containsAnswer(vadTranscript, expectedAnswer, language) -> vadTranscript
+            expectedAnswer != null && AnswerTranscriptParser.containsAnswer(fullRecordingTranscript, expectedAnswer, language) -> fullRecordingTranscript
+            AnswerTranscriptParser.containsNumber(vadTranscript, language) -> vadTranscript
+            AnswerTranscriptParser.containsNumber(fullRecordingTranscript, language) -> fullRecordingTranscript
             else -> ""
         }
     }

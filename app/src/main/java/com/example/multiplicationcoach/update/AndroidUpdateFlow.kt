@@ -31,7 +31,7 @@ sealed interface AppUpdateUiState {
     data class ReadyToInstall(val manifest: UpdateManifest, val filePath: String) : AppUpdateUiState
     data class NeedsInstallPermission(val manifest: UpdateManifest, val filePath: String) : AppUpdateUiState
     data object Installing : AppUpdateUiState
-    data class Error(val message: String) : AppUpdateUiState
+    data class Error(val messageZh: String, val messageEn: String) : AppUpdateUiState
 }
 
 internal class AndroidUpdateTransport : UpdateBytesTransport, UpdateStreamTransport {
@@ -119,7 +119,7 @@ class UpdateViewModel(application: Application) : AndroidViewModel(application) 
                             }
                         }
                     },
-                    onFailure = { error -> withContext(Dispatchers.Main) { failed("检查更新失败", error) } },
+                    onFailure = { error -> withContext(Dispatchers.Main) { failed("检查更新失败", "Update check failed", error) } },
                 )
         }
     }
@@ -166,7 +166,7 @@ class UpdateViewModel(application: Application) : AndroidViewModel(application) 
                         _state.value = ready
                     }
                 },
-                onFailure = { error -> withContext(Dispatchers.Main) { failed("下载更新失败", error) } },
+                onFailure = { error -> withContext(Dispatchers.Main) { failed("下载更新失败", "Update download failed", error) } },
             )
         }
     }
@@ -186,7 +186,11 @@ class UpdateViewModel(application: Application) : AndroidViewModel(application) 
         }
     }
 
-    private fun failed(prefix: String, error: Throwable) {
-        _state.value = AppUpdateUiState.Error("$prefix：${error.message.orEmpty()}")
+    private fun failed(prefixZh: String, prefixEn: String, error: Throwable) {
+        val detail = error.message.orEmpty()
+        _state.value = AppUpdateUiState.Error(
+            messageZh = "$prefixZh：$detail",
+            messageEn = "$prefixEn: $detail",
+        )
     }
 }

@@ -26,14 +26,15 @@ data class AsrAvailability(
 object OfflineAsrAssets {
     private const val manifestPath = "asr/manifest.json"
 
-    fun install(context: Context): Pair<AsrAssetManifest, AsrAvailability> {
+    fun install(context: Context, language: AppLanguage = AppLanguage.ZH): Pair<AsrAssetManifest, AsrAvailability> {
+        fun r(zh: String, en: String): String = if (language == AppLanguage.EN) en else zh
         val manifest = runCatching { readManifest(context.assets.open(manifestPath)) }
-            .getOrElse { return AsrAssetManifest(emptyList()) to AsrAvailability(false, "无法读取离线识别清单") }
+            .getOrElse { return AsrAssetManifest(emptyList()) to AsrAvailability(false, r("无法读取离线识别清单", "Cannot read the offline recognition manifest")) }
         val root = File(context.filesDir, "asr")
 
         for (entry in manifest.files) {
             val destination = childOrNull(root, entry.path)
-                ?: return manifest to AsrAvailability(false, "离线识别文件路径无效")
+                ?: return manifest to AsrAvailability(false, r("离线识别文件路径无效", "Invalid offline recognition file path"))
             if (destination.isFile && sha256(destination).equals(entry.sha256, ignoreCase = true)) continue
 
             runCatching {
@@ -47,21 +48,22 @@ object OfflineAsrAssets {
                 }
                 Files.move(partial.toPath(), destination.toPath(), ATOMIC_MOVE, REPLACE_EXISTING)
             }.getOrElse {
-                return manifest to AsrAvailability(false, "离线识别文件校验失败：${entry.path}")
+                return manifest to AsrAvailability(false, r("离线识别文件校验失败：${entry.path}", "Offline recognition file verification failed: ${entry.path}"))
             }
         }
 
-        return manifest to verify(manifest, root)
+        return manifest to verify(manifest, root, language)
     }
 
-    fun verify(manifest: AsrAssetManifest, root: File): AsrAvailability {
-        if (manifest.files.isEmpty()) return AsrAvailability(false, "离线识别清单为空")
+    fun verify(manifest: AsrAssetManifest, root: File, language: AppLanguage = AppLanguage.ZH): AsrAvailability {
+        fun r(zh: String, en: String): String = if (language == AppLanguage.EN) en else zh
+        if (manifest.files.isEmpty()) return AsrAvailability(false, r("离线识别清单为空", "Offline recognition manifest is empty"))
         for (entry in manifest.files) {
             val file = childOrNull(root, entry.path)
-                ?: return AsrAvailability(false, "离线识别文件路径无效")
-            if (!file.isFile) return AsrAvailability(false, "缺少离线识别文件：${entry.path}")
+                ?: return AsrAvailability(false, r("离线识别文件路径无效", "Invalid offline recognition file path"))
+            if (!file.isFile) return AsrAvailability(false, r("缺少离线识别文件：${entry.path}", "Missing offline recognition file: ${entry.path}"))
             if (!sha256(file).equals(entry.sha256, ignoreCase = true)) {
-                return AsrAvailability(false, "离线识别文件校验失败：${entry.path}")
+                return AsrAvailability(false, r("离线识别文件校验失败：${entry.path}", "Offline recognition file verification failed: ${entry.path}"))
             }
         }
         return AsrAvailability(true)

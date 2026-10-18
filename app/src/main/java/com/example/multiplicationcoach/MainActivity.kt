@@ -37,6 +37,7 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.ButtonDefaults
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
@@ -67,6 +68,8 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.compose.runtime.CompositionLocalProvider
+import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.geometry.Offset
@@ -122,9 +125,18 @@ data class Attempt(
     val timestamp: Long = System.currentTimeMillis(),
 )
 
+enum class AppLanguage { ZH, EN }
+
+/** Resolves the in-app display language for composables without threading it through every parameter. */
+val LocalAppLanguage = compositionLocalOf { AppLanguage.ZH }
+
+fun appText(zh: String, en: String): String =
+    if (LocalAppLanguage.current == AppLanguage.EN) en else zh
+
 data class AppSettings(
     val promptAudioEnabled: Boolean = true,
     val answerTimeLimitSeconds: Int = 3,
+    val language: AppLanguage = AppLanguage.ZH,
 )
 
 data class UiState(
@@ -142,9 +154,9 @@ data class UiState(
     val localAsrReason: String? = "正在检查离线识别资源…",
 )
 
-fun UiState.questionText(): String = problem?.let { problem ->
-    "${problem.a} × ${problem.b} = ${revealedAnswer ?: "?"}"
-} ?: "准备好了吗？"
+    fun UiState.questionText(): String = problem?.let { problem ->
+        "${problem.a} × ${problem.b} = ${revealedAnswer ?: "?"}"
+    } ?: if (settings.language == AppLanguage.EN) "Ready?" else "准备好了吗？"
 
 class PracticeViewModel(application: Application) : AndroidViewModel(application) {
     private val prefs = PracticePrefs(application)
@@ -153,24 +165,44 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
     private var practiceJob: Job? = null
     private var stopped = false
 
+    private val initialSettings = prefs.loadSettings()
+    private val initialLanguage = initialSettings.language
+    private fun T(zh: String, en: String): String =
+        if (initialLanguage == AppLanguage.EN) en else zh
+
     private val _state = MutableStateFlow(
         UiState(
             attempts = prefs.loadAttempts(),
-            settings = prefs.loadSettings(),
+            settings = initialSettings,
             hasAudioPermission = hasAudioPermission(application),
+            phase = T("准备开始", "Ready"),
+            feedback = T("点击开始，随机练习九九乘法表。", "Tap Start to practice the multiplication tables."),
+            localAsrReason = T("正在检查离线识别资源…", "Checking offline recognition resources…"),
         )
     )
     val state: StateFlow<UiState> = _state.asStateFlow()
 
+    private fun L(zh: String, en: String): String =
+        if (_state.value.settings.language == AppLanguage.EN) en else zh
+
     init {
+        initializeAsr(initialLanguage)
+    }
+
+    /** (Re)builds the on-device recognizer for the given language. */
+    private fun initializeAsr(language: AppLanguage) {
         viewModelScope.launch(Dispatchers.IO) {
-            localAsr.initialize(application).fold(
+            _state.value = _state.value.copy(
+                localAsrReady = false,
+                localAsrReason = L("正在检查离线识别资源…", "Checking offline recognition resources…"),
+            )
+            localAsr.initialize(application, language).fold(
                 onSuccess = {
                     _state.value = _state.value.copy(localAsrReady = true, localAsrReason = null)
                 },
                 onFailure = { error ->
                     _state.value = _state.value.copy(
-                        localAsrReason = "离线识别不可用：" + error.message.orEmpty(),
+                        localAsrReason = L("离线识别不可用：", "On-device recognition unavailable: ") + error.message.orEmpty(),
                     )
                 },
             )
@@ -185,8 +217,15 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         val normalized = settings.copy(
             answerTimeLimitSeconds = settings.answerTimeLimitSeconds.coerceIn(1, 15),
         )
+        val previousLanguage = _state.value.settings.language
         prefs.saveSettings(normalized)
         _state.value = _state.value.copy(settings = normalized)
+        // Switching the language also swaps the offline recognizer's language,
+        // so rebuild it with the new setting. UI strings pick up the new
+        // language automatically through LocalAppLanguage / L().
+        if (previousLanguage != normalized.language) {
+            initializeAsr(normalized.language)
+        }
     }
 
     fun start() {
@@ -196,7 +235,7 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
             return
         }
         stopped = false
-        _state.value = _state.value.copy(running = true, feedback = "练习开始：语音、转写和判题都在本机完成。")
+        _state.value = _state.value.copy(running = true, feedback = L("练习开始：语音、转写和判题都在本机完成。", "Practice started: speech, transcription and grading all run on-device."))
         practiceJob = viewModelScope.launch {
             var retryProblem: Problem? = null
             while (!stopped) {
@@ -211,22 +250,22 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         stopped = true
         practiceJob?.cancel()
         player.stop()
-        _state.value = _state.value.copy(running = false, countdown = 0, phase = "已停止", feedback = "已停止练习。")
+        _state.value = _state.value.copy(running = false, countdown = 0, phase = L("已停止", "Stopped"), feedback = L("已停止练习。", "Practice stopped."))
     }
 
     fun clearHistory() {
         prefs.saveAttempts(emptyList())
-        _state.value = _state.value.copy(attempts = emptyList(), feedback = "历史记录已清空。")
+        _state.value = _state.value.copy(attempts = emptyList(), feedback = L("历史记录已清空。", "History cleared."))
     }
 
     private suspend fun askOneProblem(problem: Problem): Boolean {
         val seconds = _state.value.settings.answerTimeLimitSeconds
         _state.value = _state.value.copy(
-            problem = problem, revealedAnswer = null, phase = "读题", transcript = "", countdown = seconds,
+            problem = problem, revealedAnswer = null, phase = L("读题", "Reading"), transcript = "", countdown = seconds,
             feedback = problem.label + " = ?",
         )
         if (!_state.value.hasAudioPermission) {
-            save(problem, "", null, false, "local", "缺少麦克风权限。正确答案：" + problem.answer)
+            save(problem, "", null, false, "local", L("缺少麦克风权限。正确答案：", "Microphone permission missing. Correct answer: ") + problem.answer)
             return false
         }
         // Initialize the microphone before the question ends so an immediate answer
@@ -234,58 +273,58 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         val recorder = runCatching { withContext(Dispatchers.IO) { PcmRecorder.prepare() } }
             .getOrElse { error ->
                 _state.value = _state.value.copy(
-                    phase = "录音失败",
+                    phase = L("录音失败", "Recording failed"),
                     countdown = 0,
-                    feedback = "麦克风录音失败：" + error.message.orEmpty(),
+                    feedback = L("麦克风录音失败：", "Microphone recording failed: ") + error.message.orEmpty(),
                 )
                 return false
             }
         try {
             if (_state.value.settings.promptAudioEnabled) {
-                player.playProblemAndWait(problem).userMessage?.let { message ->
+                player.playProblemAndWait(problem, _state.value.settings.language).userMessage?.let { message ->
                     _state.value = _state.value.copy(feedback = message)
                 }
             }
-        _state.value = _state.value.copy(phase = "请作答", feedback = "请在 " + seconds + " 秒内说出答案。")
+        _state.value = _state.value.copy(phase = L("请作答", "Answer now"), feedback = L("请在 ", "Say your answer within ") + seconds + L(" 秒内说出答案。", " seconds."))
         val recognition = localAsr(seconds, recorder, problem.answer)
         if (stopped) return false
         val transcript = recognition.getOrElse { error ->
-            _state.value = _state.value.copy(
-                phase = "录音失败",
-                countdown = 0,
-                transcript = "",
-                feedback = "麦克风录音失败：" + error.message.orEmpty(),
-            )
+                _state.value = _state.value.copy(
+                    phase = L("录音失败", "Recording failed"),
+                    countdown = 0,
+                    transcript = "",
+                    feedback = L("麦克风录音失败：", "Microphone recording failed: ") + error.message.orEmpty(),
+                )
             return false
         }
-        val plan = PracticeAnswerPlanner.plan(problem, transcript)
+        val plan = PracticeAnswerPlanner.plan(problem, transcript, language = _state.value.settings.language)
         if (plan.repeatProblem) {
             _state.value = _state.value.copy(
-                phase = "未识别",
+                phase = L("未识别", "No speech"),
                 countdown = 0,
-                transcript = "未识别到语音",
-                feedback = "没有识别到答案，请再说一次。",
+                transcript = L("未识别到语音", "No speech recognized"),
+                feedback = L("没有识别到答案，请再说一次。", "No answer recognized. Please say it again."),
             )
             if (_state.value.settings.promptAudioEnabled && plan.waitForAudioCompletion) {
-                player.playResourceAndWait(plan.audioResourceName)
+                player.playResourceAndWait(plan.audioResourceName, _state.value.settings.language)
             }
             return true
         }
         val result = checkNotNull(plan.verification)
         val message = if (result.correct) {
-            "答对了"
+            L("答对了", "Correct!")
         } else {
-            "答错了，正确答案：" + problem.answer
+            L("答错了，正确答案：", "Incorrect. Correct answer: ") + problem.answer
         }
         _state.value = _state.value.copy(
-            phase = if (result.correct) "答对" else "订正",
+            phase = if (result.correct) L("答对", "Correct") else L("订正", "Retry"),
             countdown = 0,
             revealedAnswer = problem.answer,
-            transcript = transcript.ifBlank { "未识别到语音" },
+            transcript = transcript.ifBlank { L("未识别到语音", "No speech recognized") },
             feedback = message,
         )
         if (_state.value.settings.promptAudioEnabled && plan.waitForAudioCompletion) {
-            player.playResourceAndWait(plan.audioResourceName)
+            player.playResourceAndWait(plan.audioResourceName, _state.value.settings.language)
         }
         save(problem, transcript, result.extractedAnswer, result.correct, result.checkedBy, message)
         return false
@@ -299,7 +338,7 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         recorder: PcmRecorder.PreparedRecorder,
         expectedAnswer: Int,
     ): Result<String> = coroutineScope {
-        _state.value = _state.value.copy(transcript = "正在本地录音…")
+        _state.value = _state.value.copy(transcript = L("正在本地录音…", "Recording on-device…"))
         val recordingStartedAt = kotlinx.coroutines.CompletableDeferred<Long>()
         val capture = async(Dispatchers.IO) {
             recorder.recordSeconds(seconds) {
@@ -331,9 +370,9 @@ class PracticeViewModel(application: Application) : AndroidViewModel(application
         }
         countdown.cancel()
         if (stopped) return@coroutineScope Result.success("")
-        _state.value = _state.value.copy(transcript = "正在本地识别…")
-        localAsr.transcribe(pcm, expectedAnswer).onFailure { error ->
-            _state.value = _state.value.copy(feedback = "离线识别失败：" + error.message.orEmpty())
+        _state.value = _state.value.copy(transcript = L("正在本地识别…", "Recognizing on-device…"))
+        localAsr.transcribe(pcm, expectedAnswer, language = _state.value.settings.language).onFailure { error ->
+            _state.value = _state.value.copy(feedback = L("离线识别失败：", "On-device recognition failed: ") + error.message.orEmpty())
         }
     }
 
@@ -419,10 +458,12 @@ class PracticePrefs(context: Context) {
     fun loadSettings(): AppSettings = AppSettings(
         promptAudioEnabled = prefs.getBoolean("promptAudioEnabled", true),
         answerTimeLimitSeconds = prefs.getInt("answerTimeLimitSeconds", 3).coerceIn(1, 15),
+        language = AppLanguage.valueOf(prefs.getString("language", "ZH") ?: "ZH"),
     )
     fun saveSettings(settings: AppSettings) {
         prefs.edit().putBoolean("promptAudioEnabled", settings.promptAudioEnabled)
-            .putInt("answerTimeLimitSeconds", settings.answerTimeLimitSeconds).apply()
+            .putInt("answerTimeLimitSeconds", settings.answerTimeLimitSeconds)
+            .putString("language", settings.language.name).apply()
     }
     fun loadAttempts(): List<Attempt> = runCatching {
         val array = JSONArray(prefs.getString("attempts", "[]"))
@@ -464,7 +505,8 @@ fun MultiplicationApp(
         updateViewModel.checkForUpdates(automatic = true)
     }
     DisposableEffect(Unit) { onDispose { viewModel.stop() } }
-    Scaffold(topBar = {
+    CompositionLocalProvider(LocalAppLanguage provides state.settings.language) {
+        Scaffold(topBar = {
         TopAppBar(title = {
             Row(verticalAlignment = Alignment.CenterVertically) {
                 Box(
@@ -483,9 +525,9 @@ fun MultiplicationApp(
                 Spacer(Modifier.width(12.dp))
                 Text(
                     when (tab) {
-                        AppTab.Practice -> "乘法口诀背诵"
-                        AppTab.Stats -> "学习统计"
-                        AppTab.Settings -> "设置"
+                        AppTab.Practice -> appText("乘法口诀背诵", "Multiplication Tables")
+                        AppTab.Stats -> appText("学习统计", "Statistics")
+                        AppTab.Settings -> appText("设置", "Settings")
                     },
                 )
             }
@@ -496,19 +538,19 @@ fun MultiplicationApp(
                 selected = tab == AppTab.Practice,
                 onClick = { tab = AppTab.Practice },
                 icon = { Icon(Icons.Default.Mic, contentDescription = null) },
-                label = { Text("练习") },
+                label = { Text(appText("练习", "Practice")) },
             )
             NavigationBarItem(
                 selected = tab == AppTab.Stats,
                 onClick = { tab = AppTab.Stats },
                 icon = { Icon(Icons.Default.BarChart, contentDescription = null) },
-                label = { Text("统计") },
+                label = { Text(appText("统计", "Stats")) },
             )
             NavigationBarItem(
                 selected = tab == AppTab.Settings,
                 onClick = { tab = AppTab.Settings },
                 icon = { Icon(Icons.Default.Settings, contentDescription = null) },
-                label = { Text("设置") },
+                label = { Text(appText("设置", "Settings")) },
             )
         }
     }) { padding ->
@@ -525,6 +567,7 @@ fun MultiplicationApp(
                 close = { tab = AppTab.Practice },
             )
         }
+    }
     }
 }
 
@@ -563,7 +606,7 @@ fun PracticeScreen(state: UiState, start: () -> Unit, stop: () -> Unit, clear: (
                         }
                     }
                     Text(state.feedback, textAlign = TextAlign.Center, color = Color.White.copy(alpha = 0.92f))
-                    if (state.transcript.isNotBlank()) Text("识别：" + state.transcript, color = Color.White.copy(alpha = 0.85f))
+                    if (state.transcript.isNotBlank()) Text(appText("识别：", "Heard: ") + state.transcript, color = Color.White.copy(alpha = 0.85f))
                     if (!state.localAsrReady) Text(state.localAsrReason.orEmpty(), color = Color(0xFFFFDAD6), textAlign = TextAlign.Center)
                 }
             }
@@ -576,7 +619,7 @@ fun PracticeScreen(state: UiState, start: () -> Unit, stop: () -> Unit, clear: (
             ) {
                 Icon(Icons.Default.PlayArrow, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
-                Text("开始")
+                Text(appText("开始", "Start"))
             }
             Button(
                 onClick = stop, enabled = state.running,
@@ -586,7 +629,7 @@ fun PracticeScreen(state: UiState, start: () -> Unit, stop: () -> Unit, clear: (
             ) {
                 Icon(Icons.Default.Stop, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
-                Text("停止")
+                Text(appText("停止", "Stop"))
             }
             OutlinedButton(
                 onClick = settings,
@@ -595,19 +638,19 @@ fun PracticeScreen(state: UiState, start: () -> Unit, stop: () -> Unit, clear: (
             ) {
                 Icon(Icons.Default.Settings, contentDescription = null)
                 Spacer(Modifier.width(6.dp))
-                Text("设置")
+                Text(appText("设置", "Settings"))
             }
         }
-        if (!state.hasAudioPermission) Text("需要麦克风权限才能语音作答。", color = Color(0xFFB23A48))
+        if (!state.hasAudioPermission) Text(appText("需要麦克风权限才能语音作答。", "Microphone permission is required to answer by voice."), color = Color(0xFFB23A48))
         Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(12.dp)) {
             Text(
-                "已保存 " + state.attempts.size + " 条本地记录。",
+                appText("已保存 " + state.attempts.size + " 条本地记录。", "Saved " + state.attempts.size + " local records."),
                 modifier = Modifier.padding(12.dp),
                 color = MaterialTheme.colorScheme.onSurfaceVariant
             )
         }
         if (state.attempts.isNotEmpty()) {
-            TextButton(onClick = clear) { Text("清空历史", color = Color(0xFFB23A48)) }
+            TextButton(onClick = clear) { Text(appText("清空历史", "Clear history"), color = Color(0xFFB23A48)) }
         }
     }
 }
@@ -627,20 +670,39 @@ fun SettingsScreen(
         item {
             Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("设置", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                    Text("音频、答题节奏与离线更新都在本机完成。", color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f))
+                    Text(appText("设置", "Settings"), fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    Text(appText("音频、答题节奏与离线更新都在本机完成。", "Audio, pacing and offline updates all run on this device."), color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f))
                 }
             }
         }
         item {
             Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(16.dp)) {
                 Row(Modifier.padding(16.dp), verticalAlignment = Alignment.CenterVertically) {
-                    Column(Modifier.weight(1f)) { Text("题目音频", fontWeight = FontWeight.Bold); Text("内置中文音频，不联网。") }
+                    Column(Modifier.weight(1f)) { Text(appText("题目音频", "Prompt audio"), fontWeight = FontWeight.Bold); Text(appText("内置中文音频，不联网。", "Built-in offline audio.")) }
                     Switch(checked = draft.promptAudioEnabled, onCheckedChange = { value -> draft = draft.copy(promptAudioEnabled = value); update(draft) })
                 }
             }
         }
-        item { Text(if (state.localAsrReady) "本地 ASR 已就绪：语音不会上传。" else state.localAsrReason.orEmpty(), color = MaterialTheme.colorScheme.onSurfaceVariant) }
+        item {
+            Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(16.dp)) {
+                Column(Modifier.padding(16.dp), verticalArrangement = Arrangement.spacedBy(10.dp)) {
+                    Text(appText("界面语言", "Language"), fontWeight = FontWeight.Bold)
+                    Row(horizontalArrangement = Arrangement.spacedBy(10.dp)) {
+                        FilterChip(
+                            selected = draft.language == AppLanguage.ZH,
+                            onClick = { draft = draft.copy(language = AppLanguage.ZH); update(draft) },
+                            label = { Text("中文") },
+                        )
+                        FilterChip(
+                            selected = draft.language == AppLanguage.EN,
+                            onClick = { draft = draft.copy(language = AppLanguage.EN); update(draft) },
+                            label = { Text("English") },
+                        )
+                    }
+                }
+            }
+        }
+        item { Text(if (state.localAsrReady) appText("本地 ASR 已就绪：语音不会上传。", "Local ASR ready: speech never leaves the device.") else state.localAsrReason.orEmpty(), color = MaterialTheme.colorScheme.onSurfaceVariant) }
         item {
             Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(16.dp)) {
                 OutlinedTextField(
@@ -649,41 +711,41 @@ fun SettingsScreen(
                         draft = draft.copy(answerTimeLimitSeconds = text.filter(Char::isDigit).toIntOrNull()?.coerceIn(1, 15) ?: 3)
                         update(draft)
                     },
-                    label = { Text("答题时间（秒）") },
+                    label = { Text(appText("答题时间（秒）", "Answer time (s)")) },
                     modifier = Modifier.fillMaxWidth()
                 )
             }
         }
-        item { Text("应用更新", fontWeight = FontWeight.Bold) }
-        item { Text("当前版本 " + BuildConfig.VERSION_NAME + "（" + BuildConfig.VERSION_CODE + "）") }
+        item { Text(appText("应用更新", "App updates"), fontWeight = FontWeight.Bold) }
+        item { Text(appText("当前版本 ", "Version ") + BuildConfig.VERSION_NAME + "（" + BuildConfig.VERSION_CODE + "）") }
         item {
             when (updateState) {
-                AppUpdateUiState.Idle -> Button(onClick = checkForUpdates, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text("检查更新") }
-                AppUpdateUiState.Checking -> Text("正在安全检查更新…")
-                AppUpdateUiState.UpToDate -> Button(onClick = checkForUpdates, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text("已是最新版本，重新检查") }
+                AppUpdateUiState.Idle -> Button(onClick = checkForUpdates, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text(appText("检查更新", "Check for updates")) }
+                AppUpdateUiState.Checking -> Text(appText("正在安全检查更新…", "Checking for updates securely…"))
+                AppUpdateUiState.UpToDate -> Button(onClick = checkForUpdates, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text(appText("已是最新版本，重新检查", "Up to date — check again")) }
                 is AppUpdateUiState.Available -> {
-                    val suffix = if (updateState.mobileData) "当前为移动数据，需你确认后下载。" else "已发现可用更新。"
+                    val suffix = if (updateState.mobileData) appText("当前为移动数据，需你确认后下载。", "On mobile data; confirm to download.") else appText("已发现可用更新。", "An update is available.")
                     Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                        Text("发现新版本 " + updateState.manifest.version.versionName + "。" + suffix)
-                        Button(onClick = downloadUpdate, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text("下载更新") }
+                        Text(appText("发现新版本 ", "New version ") + updateState.manifest.version.versionName + "。" + suffix)
+                        Button(onClick = downloadUpdate, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text(appText("下载更新", "Download update")) }
                     }
                 }
                 is AppUpdateUiState.Downloading -> Text(
-                    "正在下载更新：" + updateState.receivedBytes / 1024 / 1024 + " / " + updateState.totalBytes / 1024 / 1024 + " MB",
+                    appText("正在下载更新：", "Downloading update: ") + updateState.receivedBytes / 1024 / 1024 + " / " + updateState.totalBytes / 1024 / 1024 + " MB",
                 )
-                is AppUpdateUiState.ReadyToInstall -> Button(onClick = installUpdate, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text("安装已验证的更新") }
+                is AppUpdateUiState.ReadyToInstall -> Button(onClick = installUpdate, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text(appText("安装已验证的更新", "Install verified update")) }
                 is AppUpdateUiState.NeedsInstallPermission -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text("请先允许本应用安装更新，再返回点此继续。")
-                    Button(onClick = installUpdate, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text("允许安装并继续") }
+                    Text(appText("请先允许本应用安装更新，再返回点此继续。", "Allow this app to install updates, then come back and tap continue."))
+                    Button(onClick = installUpdate, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text(appText("允许安装并继续", "Allow install & continue")) }
                 }
-                AppUpdateUiState.Installing -> Text("已交给 Android 系统安装器确认安装。")
+                AppUpdateUiState.Installing -> Text(appText("已交给 Android 系统安装器确认安装。", "Handed off to the Android installer for confirmation."))
                 is AppUpdateUiState.Error -> Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    Text(updateState.message, color = Color(0xFFB23A48))
-                    Button(onClick = checkForUpdates, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text("重试检查") }
+                    Text(appText(updateState.messageZh, updateState.messageEn), color = Color(0xFFB23A48))
+                    Button(onClick = checkForUpdates, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text(appText("重试检查", "Retry check")) }
                 }
             }
         }
-        item { Button(onClick = close, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text("返回练习") } }
+        item { Button(onClick = close, shape = RoundedCornerShape(999.dp), contentPadding = PaddingValues(horizontal = 22.dp, vertical = 12.dp)) { Text(appText("返回练习", "Back to practice")) } }
     }
 }
 
@@ -696,13 +758,13 @@ fun StatsScreen(state: UiState, modifier: Modifier) {
     val currentStreak = attempts.takeWhile { it.correct }.size
     val distinctPairs = attempts.map { it.a to it.b }.toSet().size
     val coverage = distinctPairs / 81f
-    val achievements = computeAchievements(total, correctCount, accuracy, currentStreak, coverage, distinctPairs)
+    val achievements = computeAchievements(total, correctCount, accuracy, currentStreak, coverage, distinctPairs, language = state.settings.language)
     LazyColumn(modifier.fillMaxSize().padding(20.dp), verticalArrangement = Arrangement.spacedBy(16.dp)) {
         item {
             Surface(color = MaterialTheme.colorScheme.primaryContainer, shape = RoundedCornerShape(16.dp)) {
                 Column(Modifier.fillMaxWidth().padding(18.dp), verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                    Text("学习统计", fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
-                    Text("所有数据都保存在本机，不会上传。", color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f))
+                    Text(appText("学习统计", "Statistics"), fontSize = 22.sp, fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onPrimaryContainer)
+                    Text(appText("所有数据都保存在本机，不会上传。", "All data stays on this device and is never uploaded."), color = MaterialTheme.colorScheme.onPrimaryContainer.copy(alpha = 0.8f))
                 }
             }
         }
@@ -711,33 +773,33 @@ fun StatsScreen(state: UiState, modifier: Modifier) {
                 Surface(color = MaterialTheme.colorScheme.surfaceVariant, shape = RoundedCornerShape(16.dp)) {
                     Column(Modifier.fillMaxWidth().padding(28.dp), horizontalAlignment = Alignment.CenterHorizontally, verticalArrangement = Arrangement.spacedBy(8.dp)) {
                         Icon(Icons.Default.BarChart, null, tint = MaterialTheme.colorScheme.onSurfaceVariant, modifier = Modifier.size(36.dp))
-                        Text("还没有作答记录", fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
-                        Text("去「练习」页用语音背诵九九乘法表，这里会显示正确率、掌握度和成就。", color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
+                        Text(appText("还没有作答记录", "No practice records yet"), fontWeight = FontWeight.Bold, color = MaterialTheme.colorScheme.onSurface)
+                        Text(appText("去「练习」页用语音背诵九九乘法表，这里会显示正确率、掌握度和成就。", "Practice speaking the multiplication tables on the Practice tab; accuracy, mastery and achievements will appear here."), color = MaterialTheme.colorScheme.onSurfaceVariant, textAlign = TextAlign.Center)
                     }
                 }
             }
         } else {
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    MetricCard("总练习", "$total", "题", Modifier.weight(1f))
-                    MetricCard("正确率", "${(accuracy * 100).toInt()}%", null, Modifier.weight(1f))
+                    MetricCard(appText("总练习", "Total"), "$total", appText("题", "q"), Modifier.weight(1f))
+                    MetricCard(appText("正确率", "Accuracy"), "${(accuracy * 100).toInt()}%", null, Modifier.weight(1f))
                 }
             }
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(12.dp)) {
-                    MetricCard("当前连对", "$currentStreak", "题", Modifier.weight(1f))
-                    MetricCard("九表覆盖", "${(coverage * 100).toInt()}%", "$distinctPairs / 81", Modifier.weight(1f))
+                    MetricCard(appText("当前连对", "Streak"), "$currentStreak", appText("题", "q"), Modifier.weight(1f))
+                    MetricCard(appText("九表覆盖", "Coverage"), "${(coverage * 100).toInt()}%", "$distinctPairs / 81", Modifier.weight(1f))
                 }
             }
-            item { SectionTitle("正确率走势") }
+            item { SectionTitle(appText("正确率走势", "Accuracy trend")) }
             item {
                 Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
                     AccuracyChart(attempts, Modifier.padding(14.dp))
                 }
             }
-            item { SectionTitle("成就") }
+            item { SectionTitle(appText("成就", "Achievements")) }
             item { AchievementBadges(achievements) }
-            item { SectionTitle("九九表掌握度") }
+            item { SectionTitle(appText("九九表掌握度", "Times-table mastery")) }
             item {
                 Card(Modifier.fillMaxWidth(), shape = RoundedCornerShape(16.dp), colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface), elevation = CardDefaults.cardElevation(defaultElevation = 2.dp)) {
                     Column(Modifier.padding(14.dp)) { MistakeMatrix(attempts) }
@@ -745,8 +807,8 @@ fun StatsScreen(state: UiState, modifier: Modifier) {
             }
             item {
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
-                    SectionTitle("最近作答")
-                    Text("$total 条记录", fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
+                    SectionTitle(appText("最近作答", "Recent attempts"))
+                    Text(appText("$total 条记录", "$total records"), fontSize = 12.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
                 }
             }
             items(attempts.take(10)) { AttemptChip(it) }
@@ -776,7 +838,7 @@ fun AccuracyChart(attempts: List<Attempt>, modifier: Modifier = Modifier) {
     val points = chrono.mapIndexed { index, _ -> chrono.take(index + 1).count { it.correct }.toFloat() / (index + 1) }
     if (points.isEmpty()) {
         Box(modifier.fillMaxWidth().height(180.dp), contentAlignment = Alignment.Center) {
-            Text("开始练习后这里会显示正确率走势。", color = MaterialTheme.colorScheme.onSurfaceVariant)
+            Text(appText("开始练习后这里会显示正确率走势。", "Accuracy trend will appear after you practice."), color = MaterialTheme.colorScheme.onSurfaceVariant)
         }
         return
     }
@@ -805,14 +867,18 @@ fun AccuracyChart(attempts: List<Attempt>, modifier: Modifier = Modifier) {
 
 data class Achievement(val title: String, val subtitle: String, val unlocked: Boolean)
 
-fun computeAchievements(total: Int, correct: Int, accuracy: Float, streak: Int, coverage: Float, distinct: Int): List<Achievement> = listOf(
-    Achievement("初出茅庐", "完成第 1 题", total >= 1),
-    Achievement("渐入佳境", "正确率 ≥ 80%", total >= 10 && accuracy >= 0.8f),
-    Achievement("连战连胜", "连续答对 10 题", streak >= 10),
-    Achievement("稳如老手", "正确率 ≥ 95%", total >= 50 && accuracy >= 0.95f),
-    Achievement("九九归一", "练完全部 81 题", distinct >= 81),
-    Achievement("百题斩", "累计练习 100 题", total >= 100),
-)
+fun computeAchievements(total: Int, correct: Int, accuracy: Float, streak: Int, coverage: Float, distinct: Int, language: AppLanguage = AppLanguage.ZH): List<Achievement> {
+    val en = language == AppLanguage.EN
+    fun t(zh: String, enText: String) = if (en) enText else zh
+    return listOf(
+        Achievement(t("初出茅庐", "First Steps"), t("完成第 1 题", "Complete 1 problem"), total >= 1),
+        Achievement(t("渐入佳境", "Warming Up"), t("正确率 ≥ 80%", "Accuracy ≥ 80%"), total >= 10 && accuracy >= 0.8f),
+        Achievement(t("连战连胜", "Winning Streak"), t("连续答对 10 题", "10 in a row"), streak >= 10),
+        Achievement(t("稳如老手", "Veteran"), t("正确率 ≥ 95%", "Accuracy ≥ 95%"), total >= 50 && accuracy >= 0.95f),
+        Achievement(t("九九归一", "Complete Tables"), t("练完全部 81 题", "All 81 done"), distinct >= 81),
+        Achievement(t("百题斩", "Centurion"), t("累计练习 100 题", "100 problems"), total >= 100),
+    )
+}
 
 @Composable
 fun AchievementBadges(achievements: List<Achievement>) {
@@ -882,7 +948,7 @@ fun MistakeMatrix(attempts: List<Attempt>, modifier: Modifier = Modifier) {
             }
         }
         Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.spacedBy(10.dp), verticalAlignment = Alignment.CenterVertically) {
-            listOf(Triple(Color(0xFFEDF1EC), "未练", null), Triple(Color(0xFF5AA46E), "熟练", null), Triple(Color(0xFFE0A93B), "一般", null), Triple(Color(0xFFB23A48), "薄弱", null)).forEach { (color, label, _) ->
+            listOf(Triple(Color(0xFFEDF1EC), appText("未练", "Untried"), null), Triple(Color(0xFF5AA46E), appText("熟练", "Solid"), null), Triple(Color(0xFFE0A93B), appText("一般", "Fair"), null), Triple(Color(0xFFB23A48), appText("薄弱", "Weak"), null)).forEach { (color, label, _) ->
                 Row(verticalAlignment = Alignment.CenterVertically, horizontalArrangement = Arrangement.spacedBy(4.dp)) {
                     Box(Modifier.size(12.dp).background(color, RoundedCornerShape(3.dp)))
                     Text(label, fontSize = 11.sp, color = MaterialTheme.colorScheme.onSurfaceVariant)
@@ -898,11 +964,11 @@ fun AttemptChip(attempt: Attempt) {
         Row(Modifier.fillMaxWidth().padding(12.dp), horizontalArrangement = Arrangement.SpaceBetween, verticalAlignment = Alignment.CenterVertically) {
             Column(Modifier.weight(1f)) {
                 Text("${attempt.a} × ${attempt.b} = ${attempt.expected}", fontWeight = FontWeight.SemiBold, color = MaterialTheme.colorScheme.onSurface)
-                Text("作答：" + attempt.transcript.ifBlank { "未识别" }, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
+                Text(appText("作答：", "Answer: ") + attempt.transcript.ifBlank { appText("未识别", "Unrecognized") }, color = MaterialTheme.colorScheme.onSurfaceVariant, fontSize = 12.sp)
             }
             Surface(color = if (attempt.correct) Color(0xFFD8EADD) else Color(0xFFFBE3E1), shape = RoundedCornerShape(999.dp)) {
                 Text(
-                    if (attempt.correct) "正确" else "订正",
+                    appText(if (attempt.correct) "正确" else "订正", if (attempt.correct) "Correct" else "Retry"),
                     modifier = Modifier.padding(horizontal = 12.dp, vertical = 4.dp),
                     color = if (attempt.correct) Color(0xFF0C3320) else Color(0xFFB23A48),
                     fontWeight = FontWeight.Bold,

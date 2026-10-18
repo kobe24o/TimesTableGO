@@ -12,8 +12,8 @@ data class LocalVerification(
 )
 
 object LocalAnswerVerifier {
-    fun verify(expected: Int, transcript: String, checkedBy: String = "local"): LocalVerification {
-        val answer = AnswerTranscriptParser.parse(transcript)
+    fun verify(expected: Int, transcript: String, checkedBy: String = "local", language: AppLanguage = AppLanguage.ZH): LocalVerification {
+        val answer = AnswerTranscriptParser.parse(transcript, language)
         return LocalVerification(
             correct = answer == expected,
             extractedAnswer = answer,
@@ -21,8 +21,8 @@ object LocalAnswerVerifier {
         )
     }
 
-    fun verify(problem: Problem, transcript: String, checkedBy: String = "local"): LocalVerification {
-        val answer = AnswerTranscriptParser.parseForProblem(problem.a, problem.b, problem.answer, transcript)
+    fun verify(problem: Problem, transcript: String, checkedBy: String = "local", language: AppLanguage = AppLanguage.ZH): LocalVerification {
+        val answer = AnswerTranscriptParser.parseForProblem(problem.a, problem.b, problem.answer, transcript, language)
         return LocalVerification(
             correct = answer == problem.answer,
             extractedAnswer = answer,
@@ -37,12 +37,12 @@ data class FixedAudioPlayback(
     val userMessage: String? = null,
 ) {
     companion object {
-        fun resolve(resourceId: Int, resourceName: String): FixedAudioPlayback =
+        fun resolve(resourceId: Int, resourceName: String, language: AppLanguage = AppLanguage.ZH): FixedAudioPlayback =
             if (resourceId == 0) {
                 FixedAudioPlayback(
                     played = false,
                     resourceName = resourceName,
-                    userMessage = "音频资源缺失，已改为文字提示。",
+                    userMessage = if (language == AppLanguage.EN) "Audio missing; showing text instead." else "音频资源缺失，已改为文字提示。",
                 )
             } else {
                 FixedAudioPlayback(played = true, resourceName = resourceName)
@@ -58,16 +58,17 @@ class FixedAudioPlayer(private val context: Context) {
      * A question must finish playing before the answer timer and microphone start.
      * Otherwise a child loses answer time while listening to the question.
      */
-    suspend fun playProblemAndWait(problem: Problem): FixedAudioPlayback =
-        playAndWait(PromptAudioIndex.problemResourceName(problem.a, problem.b))
+    suspend fun playProblemAndWait(problem: Problem, language: AppLanguage = AppLanguage.ZH): FixedAudioPlayback =
+        playAndWait(PromptAudioIndex.problemResourceName(problem.a, problem.b, language), language)
 
-    fun playFeedback(feedback: FixedFeedback): FixedAudioPlayback =
-        play(PromptAudioIndex.feedbackResourceName(feedback))
+    fun playFeedback(feedback: FixedFeedback, language: AppLanguage = AppLanguage.ZH): FixedAudioPlayback =
+        play(PromptAudioIndex.feedbackResourceName(feedback, language), language)
 
-    fun playCorrection(problem: Problem): FixedAudioPlayback =
-        play(PromptAudioIndex.correctionResourceName(problem.a, problem.b))
+    fun playCorrection(problem: Problem, language: AppLanguage = AppLanguage.ZH): FixedAudioPlayback =
+        play(PromptAudioIndex.correctionResourceName(problem.a, problem.b, language), language)
 
-    suspend fun playResourceAndWait(resourceName: String): FixedAudioPlayback = playAndWait(resourceName)
+    suspend fun playResourceAndWait(resourceName: String, language: AppLanguage = AppLanguage.ZH): FixedAudioPlayback =
+        playAndWait(resourceName, language)
 
     fun stop() {
         current?.runCatching { stop() }
@@ -75,10 +76,19 @@ class FixedAudioPlayer(private val context: Context) {
         current = null
     }
 
-    private fun play(resourceName: String): FixedAudioPlayback {
+    private fun resolveRawResourceId(name: String): Int {
+        val direct = context.resources.getIdentifier(name, "raw", context.packageName)
+        if (direct != 0) return direct
+        if (name.endsWith("_en")) {
+            return context.resources.getIdentifier(name.removeSuffix("_en"), "raw", context.packageName)
+        }
+        return 0
+    }
+
+    private fun play(resourceName: String, language: AppLanguage = AppLanguage.ZH): FixedAudioPlayback {
         stop()
-        val resourceId = context.resources.getIdentifier(resourceName, "raw", context.packageName)
-        val resolution = FixedAudioPlayback.resolve(resourceId, resourceName)
+        val resourceId = resolveRawResourceId(resourceName)
+        val resolution = FixedAudioPlayback.resolve(resourceId, resourceName, language)
         if (!resolution.played) return resolution
         return runCatching {
             MediaPlayer.create(context, resourceId)?.also { player ->
@@ -92,20 +102,20 @@ class FixedAudioPlayer(private val context: Context) {
             resolution
         }.getOrElse {
             stop()
-            resolution.copy(played = false, userMessage = "音频播放失败，已改为文字提示。")
+            resolution.copy(played = false, userMessage = if (language == AppLanguage.EN) "Audio playback failed; showing text instead." else "音频播放失败，已改为文字提示。")
         }
     }
 
-    private suspend fun playAndWait(resourceName: String): FixedAudioPlayback {
+    private suspend fun playAndWait(resourceName: String, language: AppLanguage = AppLanguage.ZH): FixedAudioPlayback {
         stop()
-        val resourceId = context.resources.getIdentifier(resourceName, "raw", context.packageName)
-        val resolution = FixedAudioPlayback.resolve(resourceId, resourceName)
+        val resourceId = resolveRawResourceId(resourceName)
+        val resolution = FixedAudioPlayback.resolve(resourceId, resourceName, language)
         if (!resolution.played) return resolution
 
         return suspendCancellableCoroutine { continuation ->
             val player = runCatching { MediaPlayer.create(context, resourceId) }.getOrNull()
             if (player == null) {
-                continuation.resume(resolution.copy(played = false, userMessage = "音频播放失败，已改为文字提示。"))
+                continuation.resume(resolution.copy(played = false, userMessage = if (language == AppLanguage.EN) "Audio playback failed; showing text instead." else "音频播放失败，已改为文字提示。"))
                 return@suspendCancellableCoroutine
             }
 
@@ -117,7 +127,7 @@ class FixedAudioPlayer(private val context: Context) {
             }
             player.setOnCompletionListener { finish(resolution) }
             player.setOnErrorListener { _, _, _ ->
-                finish(resolution.copy(played = false, userMessage = "音频播放失败，已改为文字提示。"))
+                finish(resolution.copy(played = false, userMessage = if (language == AppLanguage.EN) "Audio playback failed; showing text instead." else "音频播放失败，已改为文字提示。"))
                 true
             }
             continuation.invokeOnCancellation {
@@ -126,7 +136,7 @@ class FixedAudioPlayer(private val context: Context) {
                 player.release()
             }
             runCatching { player.start() }.onFailure {
-                finish(resolution.copy(played = false, userMessage = "音频播放失败，已改为文字提示。"))
+                finish(resolution.copy(played = false, userMessage = if (language == AppLanguage.EN) "Audio playback failed; showing text instead." else "音频播放失败，已改为文字提示。"))
             }
         }
     }
@@ -141,22 +151,22 @@ data class PracticeAnswerPlan(
 )
 
 object PracticeAnswerPlanner {
-    fun plan(problem: Problem, transcript: String): PracticeAnswerPlan {
-        if (transcript.isBlank() || !AnswerTranscriptParser.containsNumber(transcript)) {
+    fun plan(problem: Problem, transcript: String, language: AppLanguage = AppLanguage.ZH): PracticeAnswerPlan {
+        if (transcript.isBlank() || !AnswerTranscriptParser.containsNumber(transcript, language)) {
             return PracticeAnswerPlan(
                 repeatProblem = true,
                 verification = null,
-                audioResourceName = PromptAudioIndex.feedbackResourceName(FixedFeedback.NoSpeech),
+                audioResourceName = PromptAudioIndex.feedbackResourceName(FixedFeedback.NoSpeech, language),
             )
         }
-        val verification = LocalAnswerVerifier.verify(problem, transcript)
+        val verification = LocalAnswerVerifier.verify(problem, transcript, language = language)
         return PracticeAnswerPlan(
             repeatProblem = false,
             verification = verification,
             audioResourceName = if (verification.correct) {
-                PromptAudioIndex.feedbackResourceName(FixedFeedback.Correct)
+                PromptAudioIndex.feedbackResourceName(FixedFeedback.Correct, language)
             } else {
-                PromptAudioIndex.correctionResourceName(problem.a, problem.b)
+                PromptAudioIndex.correctionResourceName(problem.a, problem.b, language)
             },
         )
     }
