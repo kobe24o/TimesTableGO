@@ -13,6 +13,18 @@ void main() {
   tearDown(() async {
     await dir.delete(recursive: true);
   });
+  test('fresh installation defaults to English and persists that choice', () async {
+    final store = PracticeStore(dir);
+    final first = await store.load(legacy: () async => null);
+    expect(first.settings.language, 'en');
+    expect((await store.load()).settings.language, 'en');
+  });
+  test('legacy Chinese preference is retained on upgrade', () async {
+    final loaded = await PracticeStore(dir).load(
+      legacy: () async => {'language': 'ZH', 'attempts': '[]'},
+    );
+    expect(loaded.settings.language, 'zh');
+  });
   test('round trips settings, history and migration marker', () async {
     final store = PracticeStore(dir);
     final data = StoredPractice(

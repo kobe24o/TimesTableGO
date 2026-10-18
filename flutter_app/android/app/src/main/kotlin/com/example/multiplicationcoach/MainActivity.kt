@@ -23,6 +23,7 @@ class MainActivity : FlutterFragmentActivity() {
         MethodChannel(messenger, "timestablego/legacy").setMethodCallHandler { call, result ->
             if (call.method != "readPractice") { result.notImplemented(); return@setMethodCallHandler }
             val prefs = getSharedPreferences("practice", MODE_PRIVATE)
+            if (prefs.all.isEmpty()) { result.success(null); return@setMethodCallHandler }
             result.success(mapOf(
                 "language" to prefs.getString("language", "ZH"),
                 "answerTimeLimitSeconds" to prefs.getInt("answerTimeLimitSeconds", 3),
