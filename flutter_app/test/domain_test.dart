@@ -67,6 +67,31 @@ void main() {
       expect(selectTranscript('21', 'twenty four', 'en'), 'twenty four');
     },
   );
+  test(
+    'accepts commutative spoken formulas without accepting different factors',
+    () {
+      const p = Problem(9, 3);
+      for (final text in [
+        '三九二十七',
+        '三乘九等于二十七',
+        'three times nine equals twenty seven',
+      ]) {
+        expect(
+          AnswerParser.parse(text, problem: p, language: 'en'),
+          27,
+          reason: text,
+        );
+      }
+      expect(
+        AnswerParser.parse(
+          'one times twenty seven equals twenty seven',
+          problem: p,
+          language: 'en',
+        ),
+        isNull,
+      );
+    },
+  );
   test('accuracy trend preserves chronological cumulative values', () {
     final stats = PracticeStatistics([
       const Attempt(

@@ -208,12 +208,14 @@ class AnswerParser {
         .replaceAll('〇', '零')
         .replaceAll('两', '二');
     if (shorthand ==
-        '${chinese(problem.a)}${chinese(problem.b)}${chinese(problem.answer)}') {
+            '${chinese(problem.a)}${chinese(problem.b)}${chinese(problem.answer)}' ||
+        shorthand ==
+            '${chinese(problem.b)}${chinese(problem.a)}${chinese(problem.answer)}') {
       return problem.answer;
     }
     if (values.length == 3) {
-      return values[0] == problem.a &&
-              values[1] == problem.b &&
+      return ((values[0] == problem.a && values[1] == problem.b) ||
+                  (values[0] == problem.b && values[1] == problem.a)) &&
               values[2] == problem.answer
           ? problem.answer
           : null;

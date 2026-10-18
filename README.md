@@ -41,6 +41,8 @@ Android 更新安全测试位于 `flutter_app/android/app/src/test/`：在该 `a
 
 ## 发布
 
+iOS 正式版采用付费下载、一次性买断全部功能，用户选定中国大陆基准价格人民币 ¥9.9；其他地区使用 Apple 对应货币的等价价格。TestFlight 测试不收取真实费用。付费协议、收款和税务资料须由账号持有人完成。
+
 - Android：`.github/workflows/build-apk.yml` 构建 Flutter 应用，使用原 keystore 签名并核对固定证书。主分支发布不可变标签及签名更新清单；Wi-Fi 自动下载，移动网络需用户主动下载，安装前校验大小、SHA-256、包名、版本和发布证书，再交给系统安装器确认。
 - iOS：`app.timestablego`，Apple 团队 `P24F5QH7BB`，独立 App Store Connect 记录 `6824225139`。`ios/ExportOptions.plist` 与 Release 配置使用 `TimesTable GO App Store` 分发描述文件。
 - 在 `flutter_app/` 运行 `flutter build ipa --release --target lib/main.dart --export-options-plist=ios/ExportOptions.plist`。
