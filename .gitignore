@@ -10,3 +10,7 @@ app/build/
 dist/
 .worktrees/
 .workbuddy/
+
+.superpowers/
+
+/flutter_app/assets/asr/sensevoice/model.int8.onnx

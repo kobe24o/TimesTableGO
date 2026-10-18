@@ -28,12 +28,23 @@ jobs:
           distribution: temurin
           java-version: "17"
 
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: subosito/flutter-action@v2
         with:
-          gradle-version: "8.9"
+          flutter-version: '3.47.3'
+          channel: stable
+          cache: true
 
-      - name: Test app
-        run: gradle :app:testDebugUnitTest --no-daemon
+      - name: Prepare offline resources
+        run: |
+          command -v ffmpeg || { sudo apt-get update && sudo apt-get install -y ffmpeg; }
+          python3 tools/prepare_flutter_assets.py
+
+      - name: Test Flutter app
+        working-directory: flutter_app
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
 
       - name: Restore release signing keystore
         if: github.event_name != 'pull_request'
@@ -47,31 +58,39 @@ jobs:
       - name: Build signed release APK
         if: github.event_name != 'pull_request'
         env:
-          SIGNING_KEYSTORE_PATH: keystore/release.jks
+          SIGNING_KEYSTORE_PATH: ${{ github.workspace }}/app/keystore/release.jks
           SIGNING_STORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           SIGNING_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
           SIGNING_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
         run: |
           test -n "$SIGNING_STORE_PASSWORD" && test -n "$SIGNING_KEY_ALIAS" && test -n "$SIGNING_KEY_PASSWORD" || { echo "::error::Missing Android signing secret"; exit 1; }
-          gradle :app:assembleRelease --no-daemon
+          cd flutter_app
+          flutter build apk --release
+          cd android
+          ./gradlew :app:testDebugUnitTest --no-daemon
 
       - name: Build debug APK
         if: github.event_name == 'pull_request'
-        run: gradle :app:assembleDebug --no-daemon
+        working-directory: flutter_app
+        run: |
+          flutter build apk --debug
+          cd android
+          ./gradlew :app:testDebugUnitTest --no-daemon
 
       - name: Prepare versioned APK
         id: apk
         shell: bash
         run: |
-          version_name=$(grep -oP 'versionName = "\K[^"]+' app/build.gradle.kts)
-          version_code=$(grep -oP 'versionCode = \K[0-9]+' app/build.gradle.kts)
+          version=$(sed -n 's/^version:[[:space:]]*//p' flutter_app/pubspec.yaml)
+          version_name=${version%+*}
+          version_code=${version##*+}
           mkdir -p release
           if [ "${{ github.event_name }}" = "pull_request" ]; then
             apk=release/multiplication-coach-debug.apk
-            cp app/build/outputs/apk/debug/*.apk "$apk"
+            cp flutter_app/build/app/outputs/flutter-apk/app-debug.apk "$apk"
           else
             apk="release/multiplication-coach-${version_name}-${version_code}.apk"
-            cp app/build/outputs/apk/release/*.apk "$apk"
+            cp flutter_app/build/app/outputs/flutter-apk/app-release.apk "$apk"
           fi
           echo "apk=$apk" >> "$GITHUB_OUTPUT"
           echo "version_name=$version_name" >> "$GITHUB_OUTPUT"
