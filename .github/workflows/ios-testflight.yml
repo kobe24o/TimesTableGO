@@ -1,0 +1,84 @@
+name: Build and upload iOS TestFlight
+on:
+  workflow_dispatch:
+    inputs:
+      submit_beta_review:
+        description: Submit the uploaded build for external beta review
+        type: boolean
+        default: true
+permissions:
+  contents: read
+concurrency:
+  group: ios-testflight
+  cancel-in-progress: false
+jobs:
+  upload:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    env:
+      IOS_BUNDLE_ID: app.timestablego
+      TESTFLIGHT_GROUP_NAME: outer
+      APPSTORE_ISSUER_ID: ${{ vars.APPSTORE_ISSUER_ID }}
+      APPSTORE_API_KEY_ID: ${{ vars.APPSTORE_API_KEY_ID }}
+      APPSTORE_API_PRIVATE_KEY: ${{ secrets.APPSTORE_API_PRIVATE_KEY }}
+      APPSTORE_CERTIFICATES_FILE_BASE64: ${{ secrets.APPSTORE_CERTIFICATES_FILE_BASE64 }}
+      APPSTORE_CERTIFICATES_PASSWORD: ${{ secrets.APPSTORE_CERTIFICATES_PASSWORD }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          lfs: true
+      - name: Verify credentials
+        shell: bash
+        run: |
+          for name in APPSTORE_ISSUER_ID APPSTORE_API_KEY_ID APPSTORE_API_PRIVATE_KEY APPSTORE_CERTIFICATES_FILE_BASE64 APPSTORE_CERTIFICATES_PASSWORD; do
+            test -n "${!name}" || { echo "::error::Missing $name"; exit 1; }
+          done
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.3'
+          channel: stable
+          cache: true
+      - name: Prepare offline resources
+        run: |
+          command -v ffmpeg >/dev/null || brew install ffmpeg
+          python3 tools/prepare_flutter_assets.py
+      - name: Validate app
+        working-directory: flutter_app
+        run: |
+          flutter pub get
+          flutter analyze
+          flutter test
+      - name: Validate TestFlight handoff
+        run: node --test scripts/assign-testflight-group.test.mjs
+      - uses: apple-actions/import-codesign-certs@v7
+        with:
+          p12-file-base64: ${{ env.APPSTORE_CERTIFICATES_FILE_BASE64 }}
+          p12-password: ${{ env.APPSTORE_CERTIFICATES_PASSWORD }}
+      - uses: apple-actions/download-provisioning-profiles@v6
+        with:
+          bundle-id: ${{ env.IOS_BUNDLE_ID }}
+          profile-type: IOS_APP_STORE
+          issuer-id: ${{ env.APPSTORE_ISSUER_ID }}
+          api-key-id: ${{ env.APPSTORE_API_KEY_ID }}
+          api-private-key: ${{ env.APPSTORE_API_PRIVATE_KEY }}
+      - name: Build signed IPA
+        id: build
+        working-directory: flutter_app
+        run: |
+          build_number=$(date -u +%Y%m%d%H%M%S)
+          flutter build ipa --release --target lib/main.dart --build-number="$build_number" --export-options-plist=ios/ExportOptions.plist
+          echo "number=$build_number" >> "$GITHUB_OUTPUT"
+      - uses: apple-actions/upload-testflight-build@v5
+        with:
+          app-path: flutter_app/build/ios/ipa/timestablego.ipa
+          issuer-id: ${{ env.APPSTORE_ISSUER_ID }}
+          api-key-id: ${{ env.APPSTORE_API_KEY_ID }}
+          api-private-key: ${{ env.APPSTORE_API_PRIVATE_KEY }}
+          uses-non-exempt-encryption: 'false'
+          wait-for-processing: 'false'
+          backend: appstore-api
+      - name: Assign external beta group
+        env:
+          TESTFLIGHT_BUILD_NUMBER: ${{ steps.build.outputs.number }}
+          AUTO_SUBMIT_BETA_REVIEW: ${{ inputs.submit_beta_review }}
+        run: node scripts/assign-testflight-group.mjs
